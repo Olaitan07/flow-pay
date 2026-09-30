@@ -1,5 +1,6 @@
 package com.flowpay.auth;
 
+import com.flowpay.auth.service.NotificationClient;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.util.Base64;
@@ -7,6 +8,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -20,6 +22,10 @@ public abstract class AbstractIntegrationTest {
 
     @ServiceConnection
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17");
+
+    /** notification-service is a separate service; the emails it would send are captured here instead. */
+    @MockitoBean
+    protected NotificationClient notificationClient;
 
     static {
         POSTGRES.start();

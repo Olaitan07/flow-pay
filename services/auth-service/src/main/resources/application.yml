@@ -22,6 +22,8 @@ management:
         include: health,info
 
 flowpay:
+  notification-service:
+    url: ${NOTIFICATION_SERVICE_URL:http://localhost:8086}
   security:
     internal-api-key: ${INTERNAL_API_KEY}
     jwt:
@@ -33,3 +35,9 @@ flowpay:
     login:
       max-failed-attempts: 5
       lock-duration: 15m
+    password-reset:
+      token-ttl: 30m
+      url: ${PASSWORD_RESET_URL:http://localhost:3000/reset-password}
+    otp:
+      ttl: 5m
+      max-attempts: 5

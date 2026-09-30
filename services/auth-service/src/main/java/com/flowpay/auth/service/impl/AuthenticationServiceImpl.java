@@ -3,12 +3,13 @@ package com.flowpay.auth.service.impl;
 import com.flowpay.auth.configuration.SecurityProperties;
 import com.flowpay.auth.dto.request.CreateCredentialRequest;
 import com.flowpay.auth.dto.request.LoginRequest;
-import com.flowpay.auth.dto.response.TokenResponse;
 import com.flowpay.auth.entity.Credential;
 import com.flowpay.auth.exception.DuplicateCredentialException;
 import com.flowpay.auth.exception.InvalidCredentialsException;
 import com.flowpay.auth.repository.CredentialRepository;
 import com.flowpay.auth.service.AuthenticationService;
+import com.flowpay.auth.service.LoginOutcome;
+import com.flowpay.auth.service.MfaService;
 import com.flowpay.auth.service.TokenService;
 import java.time.Clock;
 import java.time.Instant;
@@ -28,16 +29,19 @@ public class AuthenticationServiceImpl implements AuthenticationService {
     private final CredentialRepository credentials;
     private final PasswordEncoder passwordEncoder;
     private final TokenService tokenService;
+    private final MfaService mfaService;
     private final SecurityProperties.Login loginPolicy;
     private final Clock clock;
     /** Compared against when no real hash applies, so unknown and known accounts take equally long. */
     private final String decoyHash;
 
     public AuthenticationServiceImpl(CredentialRepository credentials, PasswordEncoder passwordEncoder,
-                                     TokenService tokenService, SecurityProperties properties, Clock clock) {
+                                     TokenService tokenService, MfaService mfaService, SecurityProperties properties,
+                                     Clock clock) {
         this.credentials = credentials;
         this.passwordEncoder = passwordEncoder;
         this.tokenService = tokenService;
+        this.mfaService = mfaService;
         this.loginPolicy = properties.login();
         this.clock = clock;
         this.decoyHash = passwordEncoder.encode("decoy-password-for-timing");
@@ -48,7 +52,7 @@ public class AuthenticationServiceImpl implements AuthenticationService {
      * and each counter update is its own atomic statement.
      */
     @Override
-    public TokenResponse login(LoginRequest request) {
+    public LoginOutcome login(LoginRequest request) {
         Instant now = clock.instant();
         Optional<Credential> found = credentials.findByEmail(request.email().trim().toLowerCase(Locale.ROOT));
 
@@ -72,9 +76,13 @@ public class AuthenticationServiceImpl implements AuthenticationService {
             throw new InvalidCredentialsException();
         }
 
+        if (credential.isMfaEnabled()) {
+            // The failure counter is NOT reset yet: only a completed second step proves the whole login.
+            return mfaService.startLoginChallenge(credential);
+        }
         credentials.resetFailedAttempts(credential.getCustomerId(), now);
         log.info("Login succeeded customerId={}", credential.getCustomerId());
-        return tokenService.issueNewSession(credential.getCustomerId());
+        return new LoginOutcome.Authenticated(tokenService.issueNewSession(credential.getCustomerId()));
     }
 
     @Override

@@ -37,4 +37,16 @@ public interface CredentialRepository extends JpaRepository<Credential, UUID> {
             update Credential c set c.failedAttempts = 0, c.lockedUntil = null, c.updatedAt = :now
             where c.customerId = :customerId and (c.failedAttempts <> 0 or c.lockedUntil is not null)""")
     int resetFailedAttempts(@Param("customerId") UUID customerId, @Param("now") Instant now);
+
+    @Transactional
+    @Modifying(clearAutomatically = true)
+    @Query("update Credential c set c.passwordHash = :passwordHash, c.updatedAt = :now where c.customerId = :customerId")
+    int updatePasswordHash(@Param("customerId") UUID customerId, @Param("passwordHash") String passwordHash,
+                           @Param("now") Instant now);
+
+    @Transactional
+    @Modifying(clearAutomatically = true)
+    @Query("update Credential c set c.mfaEnabled = :enabled, c.updatedAt = :now where c.customerId = :customerId")
+    int setMfaEnabled(@Param("customerId") UUID customerId, @Param("enabled") boolean enabled,
+                      @Param("now") Instant now);
 }
