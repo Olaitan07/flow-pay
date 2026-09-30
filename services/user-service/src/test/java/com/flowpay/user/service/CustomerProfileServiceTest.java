@@ -22,14 +22,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class CustomerProfileServiceTest {
 
     @Mock CustomerRepository customerRepository;
-    @Mock PasswordEncoder passwordEncoder;
+    @Mock CredentialClient credentialClient;
 
     CustomerServiceImpl service;
     Customer customer;
@@ -37,8 +36,8 @@ class CustomerProfileServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new CustomerServiceImpl(customerRepository, passwordEncoder);
-        customer = new Customer("Ada", "Obi", "ada@example.com", "+2348012345678", "hash", "NG");
+        service = new CustomerServiceImpl(customerRepository, credentialClient);
+        customer = new Customer("Ada", "Obi", "ada@example.com", "+2348012345678", "NG");
         id = customer.getId();
         lenient().when(customerRepository.findById(id)).thenReturn(Optional.of(customer));
         lenient().when(customerRepository.saveAndFlush(any(Customer.class))).thenAnswer(i -> i.getArgument(0));

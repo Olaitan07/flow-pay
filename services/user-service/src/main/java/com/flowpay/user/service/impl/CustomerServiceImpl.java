@@ -10,13 +10,13 @@ import com.flowpay.user.exception.CustomerNotFoundException;
 import com.flowpay.user.exception.DuplicateCustomerException;
 import com.flowpay.user.exception.ProfileUpdateNotAllowedException;
 import com.flowpay.user.repository.CustomerRepository;
+import com.flowpay.user.service.CredentialClient;
 import com.flowpay.user.service.CustomerService;
 import java.util.Locale;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,11 +26,11 @@ public class CustomerServiceImpl implements CustomerService {
     private static final Logger log = LoggerFactory.getLogger(CustomerServiceImpl.class);
 
     private final CustomerRepository customerRepository;
-    private final PasswordEncoder passwordEncoder;
+    private final CredentialClient credentialClient;
 
-    public CustomerServiceImpl(CustomerRepository customerRepository, PasswordEncoder passwordEncoder) {
+    public CustomerServiceImpl(CustomerRepository customerRepository, CredentialClient credentialClient) {
         this.customerRepository = customerRepository;
-        this.passwordEncoder = passwordEncoder;
+        this.credentialClient = credentialClient;
     }
 
     @Override
@@ -48,7 +48,7 @@ public class CustomerServiceImpl implements CustomerService {
         }
 
         Customer customer = new Customer(request.firstName().trim(), request.lastName().trim(), email,
-                phoneNumber, passwordEncoder.encode(request.password()), request.country());
+                phoneNumber, request.country());
         Customer saved;
         try {
             saved = customerRepository.saveAndFlush(customer);
@@ -56,6 +56,12 @@ public class CustomerServiceImpl implements CustomerService {
             // Two simultaneous registrations passed the checks above; the database rejected the second.
             throw new DuplicateCustomerException("A customer with this email or phone number already exists");
         }
+
+
+        // Runs inside the same transaction: if auth-service fails, the exception rolls the customer back, so
+        // an account never exists without a way to log in. (Residual risk: auth-service succeeds but the
+        // final commit fails, leaving an orphan credential; reconciliation covers that later.)
+        credentialClient.createCredentials(saved.getId(), email, request.password());
 
         log.info("Customer registered customerId={} status={}", saved.getId(), saved.getStatus());
         return CustomerResponse.from(saved);

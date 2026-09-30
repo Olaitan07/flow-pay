@@ -1,12 +1,16 @@
 package com.flowpay.user.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.flowpay.user.AbstractIntegrationTest;
+import com.flowpay.user.exception.RegistrationUnavailableException;
 import com.flowpay.user.repository.CustomerRepository;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -27,6 +31,7 @@ class CustomerRegistrationIntegrationTest extends AbstractIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
+        org.mockito.Mockito.reset(credentialClient);
         customerRepository.deleteAll();
     }
 
@@ -52,8 +57,21 @@ class CustomerRegistrationIntegrationTest extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.password").doesNotExist())
                 .andExpect(jsonPath("$.passwordHash").doesNotExist());
 
+        // The password is handed to auth-service (the owner of credentials) and never stored here.
         var stored = customerRepository.findAll().getFirst();
-        assertThat(stored.getPasswordHash()).startsWith("$2").doesNotContain("Sup3rSecret");
+        verify(credentialClient).createCredentials(stored.getId(), "ada@example.com", "Sup3rSecret");
+    }
+
+    @Test
+    void whenAuthServiceFails_registrationReturns503_andNoCustomerIsLeftBehind() throws Exception {
+        doThrow(new RegistrationUnavailableException("auth-service is unreachable", null))
+                .when(credentialClient).createCredentials(any(), any(), any());
+
+        register(body("ada@example.com", "+2348012345678"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error").value("REGISTRATION_UNAVAILABLE"));
+
+        assertThat(customerRepository.count()).isZero();
     }
 
     @Test

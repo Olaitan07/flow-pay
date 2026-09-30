@@ -15,8 +15,6 @@ spring:
             - id: user-service
               uri: ${USER_SERVICE_URL:http://localhost:8082}
               predicates: [Path=/api/v1/users/**]
-              filters:
-                - RemoveRequestHeader=X-Authenticated-Customer-Id
             - id: wallet-service
               uri: ${WALLET_SERVICE_URL:http://localhost:8083}
               predicates: [Path=/api/v1/wallets/**]
@@ -42,3 +40,10 @@ flowpay:
     registration:
       max-requests: ${REGISTRATION_RATE_LIMIT_MAX:5}
       window: ${REGISTRATION_RATE_LIMIT_WINDOW:1m}
+    login:
+      max-requests: ${LOGIN_RATE_LIMIT_MAX:10}
+      window: ${LOGIN_RATE_LIMIT_WINDOW:1m}
+  security:
+    jwt:
+      public-key: ${JWT_PUBLIC_KEY}
+      issuer: flowpay-auth
