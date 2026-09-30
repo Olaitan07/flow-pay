@@ -1,0 +1,1 @@
+-- transaction-service baseline: schema for transaction_db is added by versioned Flyway migrations.

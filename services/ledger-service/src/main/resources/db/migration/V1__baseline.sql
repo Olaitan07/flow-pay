@@ -1,0 +1,1 @@
+-- ledger-service baseline: schema for ledger_db is added by versioned Flyway migrations.

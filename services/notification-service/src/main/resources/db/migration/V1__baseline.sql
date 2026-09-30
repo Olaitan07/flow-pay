@@ -1,0 +1,1 @@
+-- notification-service baseline: schema for notification_db is added by versioned Flyway migrations.

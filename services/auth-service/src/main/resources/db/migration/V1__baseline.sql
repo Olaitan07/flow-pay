@@ -1,0 +1,1 @@
+-- auth-service baseline: schema for auth_db is added by versioned Flyway migrations.

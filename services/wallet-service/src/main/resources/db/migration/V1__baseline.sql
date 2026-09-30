@@ -1,0 +1,1 @@
+-- wallet-service baseline: schema for wallet_db is added by versioned Flyway migrations.

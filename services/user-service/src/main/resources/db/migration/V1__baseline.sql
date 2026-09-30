@@ -1,0 +1,1 @@
+-- user-service baseline: schema for user_db is added by versioned Flyway migrations.
