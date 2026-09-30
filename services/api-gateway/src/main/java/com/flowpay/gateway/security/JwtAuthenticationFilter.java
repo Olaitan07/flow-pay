@@ -28,6 +28,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final Set<String> PUBLIC_ENDPOINTS = Set.of(
             "POST /api/v1/users",             // registration
             "POST /api/v1/auth/login",
+            "POST /api/v1/auth/login/verify",           // second step; authenticated by the emailed code
+            "POST /api/v1/auth/password-reset/request", // the customer cannot sign in: that is why they reset
+            "POST /api/v1/auth/password-reset/confirm", // authenticated by the emailed one-time token
             "POST /api/v1/auth/refresh",      // authenticated by the refresh token in the body
             "POST /api/v1/auth/logout",       // same
             "GET /actuator/health");
