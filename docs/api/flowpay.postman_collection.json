@@ -1,0 +1,2540 @@
+{
+  "info": {
+    "name": "FlowPay API",
+    "description": "Runnable collection for the FlowPay API, served through the gateway at {{baseUrl}}.\n\n## How to use\n1. Start the stack: `docker compose up --build -d`.\n2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n4. For folder 7 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n## Good to know\n* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; when running the whole collection, set a delay of about 1500 ms between requests.\n* Each run registers a brand-new customer, so you can run it repeatedly.\n* Emails go to Mailpit (http://localhost:8025), not to real inboxes.\n* Every request's description explains how the endpoint works and how to test it.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "mailpitUrl",
+      "value": "http://localhost:8025"
+    },
+    {
+      "key": "authServiceUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "notificationServiceUrl",
+      "value": "http://localhost:8086"
+    },
+    {
+      "key": "password",
+      "value": "Sup3rSecret"
+    },
+    {
+      "key": "newPassword",
+      "value": "Brand9NewPass"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Start here (health and inbox)",
+      "description": "Check the stack is up. Open Mailpit (http://localhost:8025) in a browser to watch the emails FlowPay sends.",
+      "item": [
+        {
+          "name": "Gateway health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Confirms the gateway is up. If this fails, start the stack with `docker compose up --build -d`.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status is UP\", () => pm.expect(pm.response.json().status).to.eql(\"UP\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mailpit: empty the inbox",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{mailpitUrl}}/api/v1/messages",
+              "host": [
+                "{{mailpitUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "messages"
+              ]
+            },
+            "description": "Helper. Mailpit is the local inbox that catches every email FlowPay sends (open http://localhost:8025 in a browser). Emptying it first makes the later 'read the email' steps unambiguous.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Register a customer",
+      "description": "Create an account. Public endpoint; limited to 5 requests per minute per IP.",
+      "item": [
+        {
+          "name": "Register a customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users"
+              ]
+            },
+            "description": "Each run generates a fresh email and phone number so you never hit 'duplicate' by accident. The generated values are stored in the collection variables `email`, `phone` and `customerId`.\n\n---\n\n**Register a new customer**\n\nCreates a FlowPay account. **Public** (no token needed). Limited to 5 requests per minute per IP address.\n\n### How it works\n1. The request is validated (see the field rules in the schema).\n2. The email is lowercased. Email and phone number must each be unique.\n3. The customer is saved with a generated `id` and status `PENDING_VERIFICATION`.\n4. The password is sent to **auth-service**, which hashes it (BCrypt) and stores it. This service never stores or returns it.\n5. If auth-service is unavailable the whole registration is rolled back and you get `503`: there is never an account without a way to log in.\n\n### How to test\n1. Send the example body. Expect **201**, and copy the `id` from the response.\n2. Send the exact same body again. Expect **409 DUPLICATE_CUSTOMER** (same email, in any letter case).\n3. Change only the email and keep the phone number. Still **409** (phone must be unique too).\n4. Send `{}` or a weak password such as `weak`. Expect **400 VALIDATION_ERROR** listing each bad field.\n5. Send 6+ requests within a minute from one machine. Expect **429** with a `Retry-After` header.\n6. Next step: log in with `POST /api/v1/auth/login`.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"Ada\",\n  \"lastName\": \"Obi\",\n  \"email\": \"{{email}}\",\n  \"phoneNumber\": \"{{phone}}\",\n  \"password\": \"{{password}}\",\n  \"country\": \"NG\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"password\", \"Sup3rSecret\");",
+                  "pm.collectionVariables.set(\"email\", \"ada.\" + Date.now() + \"@example.com\");",
+                  "pm.collectionVariables.set(\"phone\", \"+23480\" + Math.floor(10000000 + Math.random() * 89999999));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"has a generated id and starts PENDING_VERIFICATION\", () => { pm.expect(body.id).to.be.a(\"string\"); pm.expect(body.status).to.eql(\"PENDING_VERIFICATION\"); });",
+                  "pm.test(\"email is stored in lowercase\", () => pm.expect(body.email).to.eql(pm.collectionVariables.get(\"email\").toLowerCase()));",
+                  "pm.test(\"no password data in the response\", () => { pm.expect(body).to.not.have.property(\"password\"); pm.expect(body).to.not.have.property(\"passwordHash\"); });",
+                  "pm.test(\"Location header points at the new profile\", () => pm.expect(pm.response.headers.get(\"Location\")).to.include(body.id));",
+                  "pm.collectionVariables.set(\"customerId\", body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register the same customer again (expect 409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users"
+              ]
+            },
+            "description": "**What this checks:** a second account with the same email must not be created.\n\n---\n\n**Register a new customer**\n\nCreates a FlowPay account. **Public** (no token needed). Limited to 5 requests per minute per IP address.\n\n### How it works\n1. The request is validated (see the field rules in the schema).\n2. The email is lowercased. Email and phone number must each be unique.\n3. The customer is saved with a generated `id` and status `PENDING_VERIFICATION`.\n4. The password is sent to **auth-service**, which hashes it (BCrypt) and stores it. This service never stores or returns it.\n5. If auth-service is unavailable the whole registration is rolled back and you get `503`: there is never an account without a way to log in.\n\n### How to test\n1. Send the example body. Expect **201**, and copy the `id` from the response.\n2. Send the exact same body again. Expect **409 DUPLICATE_CUSTOMER** (same email, in any letter case).\n3. Change only the email and keep the phone number. Still **409** (phone must be unique too).\n4. Send `{}` or a weak password such as `weak`. Expect **400 VALIDATION_ERROR** listing each bad field.\n5. Send 6+ requests within a minute from one machine. Expect **429** with a `Retry-After` header.\n6. Next step: log in with `POST /api/v1/auth/login`.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"Ada\",\n  \"lastName\": \"Obi\",\n  \"email\": \"{{email}}\",\n  \"phoneNumber\": \"{{phone}}\",\n  \"password\": \"{{password}}\",\n  \"country\": \"NG\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error is DUPLICATE_CUSTOMER\", () => pm.expect(pm.response.json().error).to.eql(\"DUPLICATE_CUSTOMER\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register with invalid data (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users"
+              ]
+            },
+            "description": "**What this checks:** every bad field is reported in one response.\n\n---\n\n**Register a new customer**\n\nCreates a FlowPay account. **Public** (no token needed). Limited to 5 requests per minute per IP address.\n\n### How it works\n1. The request is validated (see the field rules in the schema).\n2. The email is lowercased. Email and phone number must each be unique.\n3. The customer is saved with a generated `id` and status `PENDING_VERIFICATION`.\n4. The password is sent to **auth-service**, which hashes it (BCrypt) and stores it. This service never stores or returns it.\n5. If auth-service is unavailable the whole registration is rolled back and you get `503`: there is never an account without a way to log in.\n\n### How to test\n1. Send the example body. Expect **201**, and copy the `id` from the response.\n2. Send the exact same body again. Expect **409 DUPLICATE_CUSTOMER** (same email, in any letter case).\n3. Change only the email and keep the phone number. Still **409** (phone must be unique too).\n4. Send `{}` or a weak password such as `weak`. Expect **400 VALIDATION_ERROR** listing each bad field.\n5. Send 6+ requests within a minute from one machine. Expect **429** with a `Retry-After` header.\n6. Next step: log in with `POST /api/v1/auth/login`.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"\",\n  \"lastName\": \"Obi\",\n  \"email\": \"not-an-email\",\n  \"phoneNumber\": \"0801\",\n  \"password\": \"weak\",\n  \"country\": \"Nigeria\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"error is VALIDATION_ERROR\", () => pm.expect(body.error).to.eql(\"VALIDATION_ERROR\"));",
+                  "pm.test(\"names each bad field\", () => [\"firstName\", \"email\", \"phoneNumber\", \"password\", \"country\"].forEach(f => pm.expect(body.message).to.include(f)));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Log in",
+      "description": "Sign in and store the tokens. Wrong-password and unknown-email answers are identical on purpose.",
+      "item": [
+        {
+          "name": "Log in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Stores `accessToken` and `refreshToken` in collection variables. Later requests send the access token automatically.\n\n---\n\n**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "function jwtPayload(token) {\n    const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');\n    const text = (typeof atob === 'function') ? atob(part) : Buffer.from(part, 'base64').toString();\n    return JSON.parse(text);\n}",
+                  "pm.test(\"returns an access token and a refresh token\", () => { pm.expect(body.accessToken).to.be.a(\"string\"); pm.expect(body.refreshToken).to.be.a(\"string\"); pm.expect(body.tokenType).to.eql(\"Bearer\"); });",
+                  "pm.test(\"access token lasts 15 minutes\", () => pm.expect(body.expiresIn).to.eql(900));",
+                  "pm.test(\"token subject is the customer id\", () => pm.expect(jwtPayload(body.accessToken).sub).to.eql(pm.collectionVariables.get(\"customerId\")));",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "pm.collectionVariables.set(\"refreshToken\", body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in with the wrong password (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "**What this checks:** a wrong password is refused with a generic message. The message is saved so the next request can prove it is identical for an unknown email. *Five wrong passwords in a row lock the account for 15 minutes - click Send five times to try it (a password reset unlocks it).*\n\n---\n\n**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"Wrong1234\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"error is INVALID_CREDENTIALS\", () => pm.expect(body.error).to.eql(\"INVALID_CREDENTIALS\"));",
+                  "pm.collectionVariables.set(\"wrongPasswordMessage\", body.message);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in with an unknown email (expect the identical 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "**What this checks:** the answer is indistinguishable from a wrong password, so the API cannot be used to discover who has an account.\n\n---\n\n**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"nobody@example.com\",\n  \"password\": \"Wrong1234\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"same error and message as a wrong password\", () => { const b = pm.response.json(); pm.expect(b.error).to.eql(\"INVALID_CREDENTIALS\"); pm.expect(b.message).to.eql(pm.collectionVariables.get(\"wrongPasswordMessage\")); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. My profile",
+      "description": "View and maintain your own profile. Needs the bearer token (sent automatically).",
+      "item": [
+        {
+          "name": "View my profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{customerId}}"
+              ]
+            },
+            "description": "**View my profile**\n\nReturns the signed-in customer's own profile. **Requires a bearer token.**\n\n### How it works\nThe gateway verifies the access token and tells this service who is calling. You can only read **your own** profile:\nany other id, and any id that does not exist, returns the same `404`, so the API never reveals which customers exist.\n\n### How to test\n1. Register (`POST /api/v1/users`) and log in (`POST /api/v1/auth/login`). Put the `accessToken` in the Authorize box (or the `Authorization: Bearer ...` header).\n2. Call this endpoint with the `id` from registration. Expect **200** and your profile.\n3. Call it with a different UUID, e.g. `00000000-0000-0000-0000-000000000001`. Expect **404 CUSTOMER_NOT_FOUND**.\n4. Call it with no token. Expect **401 UNAUTHENTICATED**.\n5. Call it with `not-a-uuid`. Expect **400**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"is my profile\", () => { pm.expect(body.id).to.eql(pm.collectionVariables.get(\"customerId\")); pm.expect(body.status).to.eql(\"PENDING_VERIFICATION\"); });",
+                  "pm.test(\"never contains password data\", () => { pm.expect(body).to.not.have.property(\"password\"); pm.expect(body).to.not.have.property(\"passwordHash\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "View someone else's profile (expect 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/00000000-0000-0000-0000-000000000001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            },
+            "description": "**What this checks:** you cannot read another customer, and the answer does not reveal whether that customer exists.\n\n---\n\n**View my profile**\n\nReturns the signed-in customer's own profile. **Requires a bearer token.**\n\n### How it works\nThe gateway verifies the access token and tells this service who is calling. You can only read **your own** profile:\nany other id, and any id that does not exist, returns the same `404`, so the API never reveals which customers exist.\n\n### How to test\n1. Register (`POST /api/v1/users`) and log in (`POST /api/v1/auth/login`). Put the `accessToken` in the Authorize box (or the `Authorization: Bearer ...` header).\n2. Call this endpoint with the `id` from registration. Expect **200** and your profile.\n3. Call it with a different UUID, e.g. `00000000-0000-0000-0000-000000000001`. Expect **404 CUSTOMER_NOT_FOUND**.\n4. Call it with no token. Expect **401 UNAUTHENTICATED**.\n5. Call it with `not-a-uuid`. Expect **400**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 Not Found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"error is CUSTOMER_NOT_FOUND\", () => pm.expect(pm.response.json().error).to.eql(\"CUSTOMER_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "View my profile without a token (expect 401)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{customerId}}"
+              ]
+            },
+            "description": "**What this checks:** the gateway refuses requests with no access token.\n\n---\n\n**View my profile**\n\nReturns the signed-in customer's own profile. **Requires a bearer token.**\n\n### How it works\nThe gateway verifies the access token and tells this service who is calling. You can only read **your own** profile:\nany other id, and any id that does not exist, returns the same `404`, so the API never reveals which customers exist.\n\n### How to test\n1. Register (`POST /api/v1/users`) and log in (`POST /api/v1/auth/login`). Put the `accessToken` in the Authorize box (or the `Authorization: Bearer ...` header).\n2. Call this endpoint with the `id` from registration. Expect **200** and your profile.\n3. Call it with a different UUID, e.g. `00000000-0000-0000-0000-000000000001`. Expect **404 CUSTOMER_NOT_FOUND**.\n4. Call it with no token. Expect **401 UNAUTHENTICATED**.\n5. Call it with `not-a-uuid`. Expect **400**.\n",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"error is UNAUTHENTICATED\", () => pm.expect(pm.response.json().error).to.eql(\"UNAUTHENTICATED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update my address",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{customerId}}"
+              ]
+            },
+            "description": "**Update my profile**\n\nChanges the allowed parts of your profile. **Requires a bearer token.** Send only the fields you want to change.\n\n### What you can change\n| Field | Rule |\n|---|---|\n| `addressLine1`, `addressLine2`, `city`, `state`, `postalCode` | While the account is `PENDING_VERIFICATION` or `ACTIVE`. An empty string clears the field. |\n| `firstName`, `lastName` | Only while `PENDING_VERIFICATION`. They lock once the account is verified. |\n| `email`, `phoneNumber`, `country` | **Never** here (they need verification). Sending them returns `422 PROFILE_FIELD_LOCKED`. |\n| Any field on a `SUSPENDED`, `BLOCKED` or `CLOSED` account | `422 ACCOUNT_NOT_EDITABLE`. |\n\n### How to test\n1. Sign in and use your `id`. Send `{\"city\": \"Lagos\", \"addressLine1\": \"12 Marina Road\"}`. Expect **200** with the new values.\n2. Send `{\"firstName\": \"Adaeze\"}`. Expect **200** (a new account is still `PENDING_VERIFICATION`).\n3. Send `{\"email\": \"new@example.com\"}`. Expect **422 PROFILE_FIELD_LOCKED**.\n4. Send `{\"city\": \"\"}`. The city is cleared (`null`).\n5. Send `{\"firstName\": \"   \"}`. Expect **400**.\n6. Use another customer's id. Expect **404**. No token: **401**.\n7. To see the name lock, set the account to ACTIVE in the database (there is no verification flow yet) and change `firstName` again: **422**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"addressLine1\": \"12 Marina Road\",\n  \"city\": \"Lagos\",\n  \"state\": \"Lagos\",\n  \"postalCode\": \"101233\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"address updated, name untouched\", () => { pm.expect(body.city).to.eql(\"Lagos\"); pm.expect(body.addressLine1).to.eql(\"12 Marina Road\"); pm.expect(body.firstName).to.eql(\"Ada\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fix my first name (allowed while PENDING_VERIFICATION)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{customerId}}"
+              ]
+            },
+            "description": "Names can change only before the account is verified.\n\n---\n\n**Update my profile**\n\nChanges the allowed parts of your profile. **Requires a bearer token.** Send only the fields you want to change.\n\n### What you can change\n| Field | Rule |\n|---|---|\n| `addressLine1`, `addressLine2`, `city`, `state`, `postalCode` | While the account is `PENDING_VERIFICATION` or `ACTIVE`. An empty string clears the field. |\n| `firstName`, `lastName` | Only while `PENDING_VERIFICATION`. They lock once the account is verified. |\n| `email`, `phoneNumber`, `country` | **Never** here (they need verification). Sending them returns `422 PROFILE_FIELD_LOCKED`. |\n| Any field on a `SUSPENDED`, `BLOCKED` or `CLOSED` account | `422 ACCOUNT_NOT_EDITABLE`. |\n\n### How to test\n1. Sign in and use your `id`. Send `{\"city\": \"Lagos\", \"addressLine1\": \"12 Marina Road\"}`. Expect **200** with the new values.\n2. Send `{\"firstName\": \"Adaeze\"}`. Expect **200** (a new account is still `PENDING_VERIFICATION`).\n3. Send `{\"email\": \"new@example.com\"}`. Expect **422 PROFILE_FIELD_LOCKED**.\n4. Send `{\"city\": \"\"}`. The city is cleared (`null`).\n5. Send `{\"firstName\": \"   \"}`. Expect **400**.\n6. Use another customer's id. Expect **404**. No token: **401**.\n7. To see the name lock, set the account to ACTIVE in the database (there is no verification flow yet) and change `firstName` again: **422**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"Adaeze\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"first name changed\", () => pm.expect(pm.response.json().firstName).to.eql(\"Adaeze\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Try to change my email (expect 422)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{customerId}}"
+              ]
+            },
+            "description": "**What this checks:** verified identity fields (email, phone, country) cannot be changed through the profile endpoint.\n\n---\n\n**Update my profile**\n\nChanges the allowed parts of your profile. **Requires a bearer token.** Send only the fields you want to change.\n\n### What you can change\n| Field | Rule |\n|---|---|\n| `addressLine1`, `addressLine2`, `city`, `state`, `postalCode` | While the account is `PENDING_VERIFICATION` or `ACTIVE`. An empty string clears the field. |\n| `firstName`, `lastName` | Only while `PENDING_VERIFICATION`. They lock once the account is verified. |\n| `email`, `phoneNumber`, `country` | **Never** here (they need verification). Sending them returns `422 PROFILE_FIELD_LOCKED`. |\n| Any field on a `SUSPENDED`, `BLOCKED` or `CLOSED` account | `422 ACCOUNT_NOT_EDITABLE`. |\n\n### How to test\n1. Sign in and use your `id`. Send `{\"city\": \"Lagos\", \"addressLine1\": \"12 Marina Road\"}`. Expect **200** with the new values.\n2. Send `{\"firstName\": \"Adaeze\"}`. Expect **200** (a new account is still `PENDING_VERIFICATION`).\n3. Send `{\"email\": \"new@example.com\"}`. Expect **422 PROFILE_FIELD_LOCKED**.\n4. Send `{\"city\": \"\"}`. The city is cleared (`null`).\n5. Send `{\"firstName\": \"   \"}`. Expect **400**.\n6. Use another customer's id. Expect **404**. No token: **401**.\n7. To see the name lock, set the account to ACTIVE in the database (there is no verification flow yet) and change `firstName` again: **422**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"new@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is PROFILE_FIELD_LOCKED\", () => pm.expect(pm.response.json().error).to.eql(\"PROFILE_FIELD_LOCKED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Clear my city (empty string)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/{{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "{{customerId}}"
+              ]
+            },
+            "description": "**Update my profile**\n\nChanges the allowed parts of your profile. **Requires a bearer token.** Send only the fields you want to change.\n\n### What you can change\n| Field | Rule |\n|---|---|\n| `addressLine1`, `addressLine2`, `city`, `state`, `postalCode` | While the account is `PENDING_VERIFICATION` or `ACTIVE`. An empty string clears the field. |\n| `firstName`, `lastName` | Only while `PENDING_VERIFICATION`. They lock once the account is verified. |\n| `email`, `phoneNumber`, `country` | **Never** here (they need verification). Sending them returns `422 PROFILE_FIELD_LOCKED`. |\n| Any field on a `SUSPENDED`, `BLOCKED` or `CLOSED` account | `422 ACCOUNT_NOT_EDITABLE`. |\n\n### How to test\n1. Sign in and use your `id`. Send `{\"city\": \"Lagos\", \"addressLine1\": \"12 Marina Road\"}`. Expect **200** with the new values.\n2. Send `{\"firstName\": \"Adaeze\"}`. Expect **200** (a new account is still `PENDING_VERIFICATION`).\n3. Send `{\"email\": \"new@example.com\"}`. Expect **422 PROFILE_FIELD_LOCKED**.\n4. Send `{\"city\": \"\"}`. The city is cleared (`null`).\n5. Send `{\"firstName\": \"   \"}`. Expect **400**.\n6. Use another customer's id. Expect **404**. No token: **401**.\n7. To see the name lock, set the account to ACTIVE in the database (there is no verification flow yet) and change `firstName` again: **422**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"city\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"city cleared, other address fields kept\", () => { const b = pm.response.json(); pm.expect(b.city).to.eql(null); pm.expect(b.postalCode).to.eql(\"101233\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Sessions (refresh and log out)",
+      "description": "Token rotation, reuse detection, log out, log out everywhere.",
+      "item": [
+        {
+          "name": "Refresh the access token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Returns a **new** refresh token and retires the old one. The old one is kept in `previousRefreshToken` for the next request.\n\n---\n\n**Get a new access token**\n\nExchanges a refresh token for a fresh access token **and a new refresh token**. **Public** (the refresh token is the proof).\n\n### How it works\nRefresh tokens are **single use** (\"rotation\"). Using one returns a new pair and retires the old token.\nIf an already-used token is presented again it may have been stolen, so the **whole session is revoked**: every token in that chain stops working.\n\n### How to test\n1. Log in and copy `refreshToken`.\n2. Call refresh with it. Expect **200** and a **different** `refreshToken`.\n3. Call refresh again with the **old** token. Expect **401 INVALID_REFRESH_TOKEN**.\n4. Now try the **new** token from step 2. Also **401**: reuse ended the session. Log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"previousRefreshToken\", pm.collectionVariables.get(\"refreshToken\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"got a different refresh token\", () => pm.expect(body.refreshToken).to.not.eql(pm.collectionVariables.get(\"previousRefreshToken\")));",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "pm.collectionVariables.set(\"refreshToken\", body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reuse the OLD refresh token (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "**What this checks:** a refresh token works only once. Presenting a used one is treated as possible theft and ends the whole session.\n\n---\n\n**Get a new access token**\n\nExchanges a refresh token for a fresh access token **and a new refresh token**. **Public** (the refresh token is the proof).\n\n### How it works\nRefresh tokens are **single use** (\"rotation\"). Using one returns a new pair and retires the old token.\nIf an already-used token is presented again it may have been stolen, so the **whole session is revoked**: every token in that chain stops working.\n\n### How to test\n1. Log in and copy `refreshToken`.\n2. Call refresh with it. Expect **200** and a **different** `refreshToken`.\n3. Call refresh again with the **old** token. Expect **401 INVALID_REFRESH_TOKEN**.\n4. Now try the **new** token from step 2. Also **401**: reuse ended the session. Log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{previousRefreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"error is INVALID_REFRESH_TOKEN\", () => pm.expect(pm.response.json().error).to.eql(\"INVALID_REFRESH_TOKEN\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The NEWER token is now dead too (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "**What this checks:** reuse revoked the whole session, including the newest token. You must log in again.\n\n---\n\n**Get a new access token**\n\nExchanges a refresh token for a fresh access token **and a new refresh token**. **Public** (the refresh token is the proof).\n\n### How it works\nRefresh tokens are **single use** (\"rotation\"). Using one returns a new pair and retires the old token.\nIf an already-used token is presented again it may have been stolen, so the **whole session is revoked**: every token in that chain stops working.\n\n### How to test\n1. Log in and copy `refreshToken`.\n2. Call refresh with it. Expect **200** and a **different** `refreshToken`.\n3. Call refresh again with the **old** token. Expect **401 INVALID_REFRESH_TOKEN**.\n4. Now try the **new** token from step 2. Also **401**: reuse ended the session. Log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in again (new session)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "pm.collectionVariables.set(\"refreshToken\", body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log out this session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "**Log out this session**\n\nEnds the session that the refresh token belongs to. **Public** (the refresh token is the proof).\n\n### How it works\nThe refresh token (and every token in its chain) is revoked. Calling it again, or with an unknown token, still returns `204`, so it is safe to repeat and reveals nothing.\nThe access token already issued stays valid until it expires (at most 15 minutes).\n\n### How to test\n1. Log in and copy `refreshToken`.\n2. Call logout with it. Expect **204**.\n3. Call refresh with the same token. Expect **401**.\n4. Call logout again. Still **204**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204 No Content\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh after logging out (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "**Get a new access token**\n\nExchanges a refresh token for a fresh access token **and a new refresh token**. **Public** (the refresh token is the proof).\n\n### How it works\nRefresh tokens are **single use** (\"rotation\"). Using one returns a new pair and retires the old token.\nIf an already-used token is presented again it may have been stolen, so the **whole session is revoked**: every token in that chain stops working.\n\n### How to test\n1. Log in and copy `refreshToken`.\n2. Call refresh with it. Expect **200** and a **different** `refreshToken`.\n3. Call refresh again with the **old** token. Expect **401 INVALID_REFRESH_TOKEN**.\n4. Now try the **new** token from step 2. Also **401**: reuse ended the session. Log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in again (for log-out-everywhere)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "pm.collectionVariables.set(\"refreshToken\", body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log out everywhere",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout-all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout-all"
+              ]
+            },
+            "description": "Needs the bearer token (sent automatically).\n\n---\n\n**Log out everywhere**\n\nEnds **every** session of the signed-in customer (phone, laptop, ...). **Requires a bearer token.**\n\n### How it works\nAll of the customer's refresh tokens are revoked. Existing access tokens expire on their own within 15 minutes.\n\n### How to test\n1. Log in twice to create two sessions; keep both `refreshToken` values and one `accessToken`.\n2. Call this endpoint with the access token. Expect **204**.\n3. Call refresh with each refresh token. Both return **401**.\n4. Call it without a token. Expect **401 UNAUTHENTICATED**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204 No Content\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh after log-out-everywhere (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "**Get a new access token**\n\nExchanges a refresh token for a fresh access token **and a new refresh token**. **Public** (the refresh token is the proof).\n\n### How it works\nRefresh tokens are **single use** (\"rotation\"). Using one returns a new pair and retires the old token.\nIf an already-used token is presented again it may have been stolen, so the **whole session is revoked**: every token in that chain stops working.\n\n### How to test\n1. Log in and copy `refreshToken`.\n2. Call refresh with it. Expect **200** and a **different** `refreshToken`.\n3. Call refresh again with the **old** token. Expect **401 INVALID_REFRESH_TOKEN**.\n4. Now try the **new** token from step 2. Also **401**: reuse ended the session. Log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Password reset",
+      "description": "Forgot-password flow. Reads the emailed token from Mailpit automatically.",
+      "item": [
+        {
+          "name": "Mailpit: empty the inbox",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{mailpitUrl}}/api/v1/messages",
+              "host": [
+                "{{mailpitUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "messages"
+              ]
+            },
+            "description": "Helper: start from an empty inbox.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Request a reset link",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/password-reset/request",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "password-reset",
+                "request"
+              ]
+            },
+            "description": "**Email me a password reset link**\n\nAsks for a reset link to be emailed. **Public.** Limited to 5 requests per minute per IP address (shared with `confirm`).\n\n### How it works\n* The answer is **always** `202` with the same message, whether or not the email has an account, so this cannot be used to find out who is registered.\n* If the account exists, a one-time link valid for **30 minutes** is emailed (`PASSWORD_RESET_URL?token=...`). The email is sent in the background.\n* Asking again cancels the earlier link; only the newest works.\n\n### How to test\n1. Register a customer, then call this endpoint with their email. Expect **202**.\n2. Call it with an email that does not exist. Expect the **identical 202** body.\n3. Open the inbox (Mailpit at http://localhost:8025). Only the real account received an email. Copy the `token=` value from the link.\n4. Continue with `POST /api/v1/auth/password-reset/confirm`.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 Accepted\", () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"resetAckMessage\", body.message);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Request a reset for an unknown email (identical answer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/password-reset/request",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "password-reset",
+                "request"
+              ]
+            },
+            "description": "**What this checks:** the response is exactly the same as for a real account, so it reveals nothing.\n\n---\n\n**Email me a password reset link**\n\nAsks for a reset link to be emailed. **Public.** Limited to 5 requests per minute per IP address (shared with `confirm`).\n\n### How it works\n* The answer is **always** `202` with the same message, whether or not the email has an account, so this cannot be used to find out who is registered.\n* If the account exists, a one-time link valid for **30 minutes** is emailed (`PASSWORD_RESET_URL?token=...`). The email is sent in the background.\n* Asking again cancels the earlier link; only the newest works.\n\n### How to test\n1. Register a customer, then call this endpoint with their email. Expect **202**.\n2. Call it with an email that does not exist. Expect the **identical 202** body.\n3. Open the inbox (Mailpit at http://localhost:8025). Only the real account received an email. Copy the `token=` value from the link.\n4. Continue with `POST /api/v1/auth/password-reset/confirm`.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ghost@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202 Accepted\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"same message as for a real account\", () => pm.expect(pm.response.json().message).to.eql(pm.collectionVariables.get(\"resetAckMessage\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mailpit: read the reset email and grab the token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{mailpitUrl}}/api/v1/message/latest",
+              "host": [
+                "{{mailpitUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "message",
+                "latest"
+              ]
+            },
+            "description": "Reads the newest email from the local inbox and extracts the `token=` value from the reset link into `resetToken`. You can also open http://localhost:8025 and copy it by hand.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Emails are sent in the background: give the mail server a moment before reading the inbox.\nconst wakeAt = Date.now() + 1500;\nwhile (Date.now() < wakeAt) { /* wait */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const mail = pm.response.json();",
+                  "pm.test(\"sent to the customer\", () => pm.expect(mail.To[0].Address).to.eql(pm.collectionVariables.get(\"email\").toLowerCase()));",
+                  "const match = /token=([A-Za-z0-9_-]+)/.exec(mail.Text);",
+                  "pm.test(\"contains a reset link with a token\", () => pm.expect(match, \"no token= in the email\").to.not.eql(null));",
+                  "if (match) { pm.collectionVariables.set(\"resetToken\", match[1]); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mailpit: only the real account got an email",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{mailpitUrl}}/api/v1/messages",
+              "host": [
+                "{{mailpitUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "messages"
+              ]
+            },
+            "description": "**What this checks:** the unknown address received nothing, even though the API answered the same way.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"exactly one email was sent\", () => pm.expect(pm.response.json().messages_count).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Set a new password with the token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/password-reset/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "password-reset",
+                "confirm"
+              ]
+            },
+            "description": "**Set a new password using the emailed token**\n\nCompletes a reset. **Public.** The emailed token is the proof of ownership.\n\n### How it works\nIn one transaction: the token is used up (it works **once**), the password is changed, a locked account is **unlocked**, and **every session is signed out**. A \"password changed\" email is then sent.\nUnknown, expired and already-used tokens all return the same `400 INVALID_RESET_TOKEN`.\nA weak new password is rejected **without** using up the token, so you can retry.\n\n### How to test\n1. Request a reset and copy the `token` from the email.\n2. Send `token` + a strong `newPassword`. Expect **204**.\n3. Log in with the new password: **200**. With the old one: **401**.\n4. Send the same token again: **400 INVALID_RESET_TOKEN**.\n5. Try an old refresh token: **401** (everyone was signed out).\n6. Send `newPassword: \"weak\"` with a fresh token: **400 VALIDATION_ERROR**, and the token still works afterwards.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{resetToken}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204 No Content\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Use the same link again (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/password-reset/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "password-reset",
+                "confirm"
+              ]
+            },
+            "description": "**What this checks:** a reset link works only once.\n\n---\n\n**Set a new password using the emailed token**\n\nCompletes a reset. **Public.** The emailed token is the proof of ownership.\n\n### How it works\nIn one transaction: the token is used up (it works **once**), the password is changed, a locked account is **unlocked**, and **every session is signed out**. A \"password changed\" email is then sent.\nUnknown, expired and already-used tokens all return the same `400 INVALID_RESET_TOKEN`.\nA weak new password is rejected **without** using up the token, so you can retry.\n\n### How to test\n1. Request a reset and copy the `token` from the email.\n2. Send `token` + a strong `newPassword`. Expect **204**.\n3. Log in with the new password: **200**. With the old one: **401**.\n4. Send the same token again: **400 INVALID_RESET_TOKEN**.\n5. Try an old refresh token: **401** (everyone was signed out).\n6. Send `newPassword: \"weak\"` with a fresh token: **400 VALIDATION_ERROR**, and the token still works afterwards.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{resetToken}}\",\n  \"newPassword\": \"An0therPass1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error is INVALID_RESET_TOKEN\", () => pm.expect(pm.response.json().error).to.eql(\"INVALID_RESET_TOKEN\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in with the OLD password (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in with the NEW password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Also switches the collection's `password` variable to the new password for the rest of the run.\n\n---\n\n**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{newPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "pm.collectionVariables.set(\"refreshToken\", body.refreshToken);",
+                  "pm.collectionVariables.set(\"password\", pm.collectionVariables.get(\"newPassword\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Two-step verification (email code)",
+      "description": "Turn on the email code, log in with it, then turn it off. Reads the emailed codes from Mailpit automatically.",
+      "item": [
+        {
+          "name": "Mailpit: empty the inbox",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{mailpitUrl}}/api/v1/messages",
+              "host": [
+                "{{mailpitUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "messages"
+              ]
+            },
+            "description": "Helper: start from an empty inbox.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Start turning on two-step verification",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/mfa/enable/request",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "mfa",
+                "enable",
+                "request"
+              ]
+            },
+            "description": "**Start turning on two-step verification**\n\nEmails a confirmation code. **Requires a bearer token.** Limited to 10 requests per minute per IP address (shared with the other MFA calls).\n\n### How it works\nA code is emailed first, so you cannot lock yourself out with an address that does not work. Nothing changes until you confirm the code.\nRequesting again replaces the previous code. If two-step is already on you get `409`.\n\n### How to test\n1. Log in and authorize with the `accessToken`.\n2. Call this endpoint. Expect **200** with a `challengeId`. Copy it.\n3. Open the inbox (Mailpit at http://localhost:8025) and read the code.\n4. Continue with `POST /api/v1/auth/mfa/enable/confirm`.\n5. Without a token: **401**. After enabling, calling this again: **409 MFA_ALREADY_ENABLED**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"a challenge was created\", () => { pm.expect(body.mfaRequired).to.eql(true); pm.expect(body.challengeId).to.be.a(\"string\"); });",
+                  "pm.collectionVariables.set(\"challengeId\", body.challengeId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mailpit: read the confirmation code",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{mailpitUrl}}/api/v1/message/latest",
+              "host": [
+                "{{mailpitUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "message",
+                "latest"
+              ]
+            },
+            "description": "Reads the newest email and stores the 6-digit code in `otpCode`. You can also read it by hand at http://localhost:8025.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Emails are sent in the background: give the mail server a moment before reading the inbox.\nconst wakeAt = Date.now() + 500;\nwhile (Date.now() < wakeAt) { /* wait */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const mail = pm.response.json();",
+                  "const match = /code is: (\\d{6})/.exec(mail.Text);",
+                  "pm.test(\"email contains a 6-digit code\", () => pm.expect(match, \"no code in the email\").to.not.eql(null));",
+                  "if (match) { pm.collectionVariables.set(\"otpCode\", match[1]); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm and turn on two-step verification",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/mfa/enable/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "mfa",
+                "enable",
+                "confirm"
+              ]
+            },
+            "description": "**Confirm the code and turn on two-step verification**\n\nTurns two-step verification on once the emailed code is proven. **Requires a bearer token.**\n\n### How it works\nThe code must belong to **your** account and to this purpose (a login code cannot be used here, and vice versa). Same rules as login codes: 5 minutes, single use, 5 guesses.\nFrom then on, `POST /api/v1/auth/login` returns `mfaRequired` instead of tokens.\n\n### How to test\n1. After `enable/request`, send the `challengeId` and the emailed `code`. Expect **204**.\n2. Log in again: the response is now `{\"mfaRequired\": true, ...}`.\n3. Send a wrong code: **401 INVALID_MFA_CODE**.\n4. Send a code that belongs to someone else's challenge: also **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"challengeId\": \"{{challengeId}}\",\n  \"code\": \"{{otpCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204 No Content\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mailpit: empty the inbox (before logging in)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{mailpitUrl}}/api/v1/messages",
+              "host": [
+                "{{mailpitUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "messages"
+              ]
+            },
+            "description": "Helper.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in - now a code is required",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "With two-step verification on, a correct password no longer returns tokens. It returns a `challengeId` and emails a code.\n\n---\n\n**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"a code is required and no tokens are issued\", () => { pm.expect(body.mfaRequired).to.eql(true); pm.expect(body).to.not.have.property(\"accessToken\"); pm.expect(body).to.not.have.property(\"refreshToken\"); });",
+                  "pm.collectionVariables.set(\"challengeId\", body.challengeId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mailpit: read the sign-in code",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{mailpitUrl}}/api/v1/message/latest",
+              "host": [
+                "{{mailpitUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "message",
+                "latest"
+              ]
+            },
+            "description": "Stores the sign-in code in `otpCode` (also visible at http://localhost:8025).",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Emails are sent in the background: give the mail server a moment before reading the inbox.\nconst wakeAt = Date.now() + 500;\nwhile (Date.now() < wakeAt) { /* wait */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const mail = pm.response.json();",
+                  "const match = /code is: (\\d{6})/.exec(mail.Text);",
+                  "pm.test(\"email contains a 6-digit code\", () => pm.expect(match, \"no code in the email\").to.not.eql(null));",
+                  "if (match) { pm.collectionVariables.set(\"otpCode\", match[1]); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify with a wrong code (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login",
+                "verify"
+              ]
+            },
+            "description": "A wrong guess is refused. A code allows 5 guesses in total, and wrong guesses also count towards the account lockout.\n\n---\n\n**Finish login with the emailed code**\n\nSecond step of login for customers who turned on two-step verification. **Public.** Shares the login rate limit.\n\n### How it works\nThe code is 6 digits, valid **5 minutes**, usable **once**, with **5 guesses**. Wrong guesses also count towards the account lockout.\nEvery failure (wrong code, expired, already used, unknown challenge) returns the same `401 INVALID_MFA_CODE`.\n\n### How to test\n1. Enable two-step verification, then call `POST /api/v1/auth/login`. Copy `challengeId`.\n2. Open the inbox (Mailpit at http://localhost:8025) and read the 6-digit code.\n3. Send `challengeId` + `code`. Expect **200** with tokens.\n4. Send the same code again. Expect **401 INVALID_MFA_CODE** (single use).\n5. Request a new login code and send `000000` five times. The code is now dead, even the right one.\n6. A malformed code such as `12ab` returns **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"challengeId\": \"{{challengeId}}\",\n  \"code\": \"{{wrongCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"wrongCode\", pm.collectionVariables.get(\"otpCode\") === \"000000\" ? \"111111\" : \"000000\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"error is INVALID_MFA_CODE\", () => pm.expect(pm.response.json().error).to.eql(\"INVALID_MFA_CODE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify with the right code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login",
+                "verify"
+              ]
+            },
+            "description": "**Finish login with the emailed code**\n\nSecond step of login for customers who turned on two-step verification. **Public.** Shares the login rate limit.\n\n### How it works\nThe code is 6 digits, valid **5 minutes**, usable **once**, with **5 guesses**. Wrong guesses also count towards the account lockout.\nEvery failure (wrong code, expired, already used, unknown challenge) returns the same `401 INVALID_MFA_CODE`.\n\n### How to test\n1. Enable two-step verification, then call `POST /api/v1/auth/login`. Copy `challengeId`.\n2. Open the inbox (Mailpit at http://localhost:8025) and read the 6-digit code.\n3. Send `challengeId` + `code`. Expect **200** with tokens.\n4. Send the same code again. Expect **401 INVALID_MFA_CODE** (single use).\n5. Request a new login code and send `000000` five times. The code is now dead, even the right one.\n6. A malformed code such as `12ab` returns **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"challengeId\": \"{{challengeId}}\",\n  \"code\": \"{{otpCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"tokens issued\", () => { pm.expect(body.accessToken).to.be.a(\"string\"); pm.expect(body.refreshToken).to.be.a(\"string\"); });",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "pm.collectionVariables.set(\"refreshToken\", body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reuse the same code (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login",
+                "verify"
+              ]
+            },
+            "description": "**What this checks:** a code works only once.\n\n---\n\n**Finish login with the emailed code**\n\nSecond step of login for customers who turned on two-step verification. **Public.** Shares the login rate limit.\n\n### How it works\nThe code is 6 digits, valid **5 minutes**, usable **once**, with **5 guesses**. Wrong guesses also count towards the account lockout.\nEvery failure (wrong code, expired, already used, unknown challenge) returns the same `401 INVALID_MFA_CODE`.\n\n### How to test\n1. Enable two-step verification, then call `POST /api/v1/auth/login`. Copy `challengeId`.\n2. Open the inbox (Mailpit at http://localhost:8025) and read the 6-digit code.\n3. Send `challengeId` + `code`. Expect **200** with tokens.\n4. Send the same code again. Expect **401 INVALID_MFA_CODE** (single use).\n5. Request a new login code and send `000000` five times. The code is now dead, even the right one.\n6. A malformed code such as `12ab` returns **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"challengeId\": \"{{challengeId}}\",\n  \"code\": \"{{otpCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Turn off two-step with a wrong password (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/mfa/disable",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "mfa",
+                "disable"
+              ]
+            },
+            "description": "**Turn off two-step verification**\n\nTurns two-step verification off. **Requires a bearer token and the current password.**\n\n### How it works\nThe password is required so that a stolen access token alone cannot weaken the account. Wrong passwords here count towards the account lockout.\n\n### How to test\n1. With two-step on, send a wrong password. Expect **401 INVALID_CREDENTIALS** (still enabled).\n2. Send the correct password. Expect **204**.\n3. Log in: you get tokens directly again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": \"Wrong1234\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Turn off two-step verification",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/mfa/disable",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "mfa",
+                "disable"
+              ]
+            },
+            "description": "**Turn off two-step verification**\n\nTurns two-step verification off. **Requires a bearer token and the current password.**\n\n### How it works\nThe password is required so that a stolen access token alone cannot weaken the account. Wrong passwords here count towards the account lockout.\n\n### How to test\n1. With two-step on, send a wrong password. Expect **401 INVALID_CREDENTIALS** (still enabled).\n2. Send the correct password. Expect **204**.\n3. Log in: you get tokens directly again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204 No Content\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log in - single step again",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"tokens returned directly\", () => pm.expect(pm.response.json().accessToken).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Internal APIs (developers only)",
+      "description": "Service-to-service endpoints called directly on their own ports. Needs `internalApiKey` (INTERNAL_API_KEY from .env).",
+      "item": [
+        {
+          "name": "Create credentials directly (auth-service)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{authServiceUrl}}/internal/credentials",
+              "host": [
+                "{{authServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "credentials"
+              ]
+            },
+            "description": "**Needs `internalApiKey`:** set it in the environment to `INTERNAL_API_KEY` from your `.env`. Calls auth-service directly on port 8081, not the gateway.\n\n---\n\n**Store login credentials for a new customer**\n\nCalled by user-service right after it creates a customer. **Internal only.**\n\n### How it works\nHashes the password (BCrypt) and stores it with the email. Safe to retry: the same customer id and email returns `200` instead of creating a duplicate.\n\n### How to test (direct call, development only)\n1. Send any random `customerId` UUID with a new email and a password, with the `X-Internal-Api-Key` header. Expect **201**.\n2. Repeat the identical request. Expect **200** (idempotent retry).\n3. Use the same email with a different `customerId`. Expect **409 DUPLICATE_CREDENTIAL**.\n4. Omit or change the key. Expect **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{internalCustomerId}}\",\n  \"email\": \"{{internalEmail}}\",\n  \"password\": \"Sup3rSecret\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"internalApiKey is set (copy INTERNAL_API_KEY from .env into the environment)\", () => pm.expect(pm.variables.get(\"internalApiKey\")).to.be.a(\"string\").and.not.empty);",
+                  "pm.collectionVariables.set(\"internalCustomerId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"internalEmail\", \"internal.\" + Date.now() + \"@example.com\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Repeat the same call (idempotent retry, expect 200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{authServiceUrl}}/internal/credentials",
+              "host": [
+                "{{authServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "credentials"
+              ]
+            },
+            "description": "**What this checks:** retrying the identical request is safe and creates no duplicate.\n\n---\n\n**Store login credentials for a new customer**\n\nCalled by user-service right after it creates a customer. **Internal only.**\n\n### How it works\nHashes the password (BCrypt) and stores it with the email. Safe to retry: the same customer id and email returns `200` instead of creating a duplicate.\n\n### How to test (direct call, development only)\n1. Send any random `customerId` UUID with a new email and a password, with the `X-Internal-Api-Key` header. Expect **201**.\n2. Repeat the identical request. Expect **200** (idempotent retry).\n3. Use the same email with a different `customerId`. Expect **409 DUPLICATE_CREDENTIAL**.\n4. Omit or change the key. Expect **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{internalCustomerId}}\",\n  \"email\": \"{{internalEmail}}\",\n  \"password\": \"Sup3rSecret\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create credentials without the key (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{authServiceUrl}}/internal/credentials",
+              "host": [
+                "{{authServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "credentials"
+              ]
+            },
+            "description": "**Store login credentials for a new customer**\n\nCalled by user-service right after it creates a customer. **Internal only.**\n\n### How it works\nHashes the password (BCrypt) and stores it with the email. Safe to retry: the same customer id and email returns `200` instead of creating a duplicate.\n\n### How to test (direct call, development only)\n1. Send any random `customerId` UUID with a new email and a password, with the `X-Internal-Api-Key` header. Expect **201**.\n2. Repeat the identical request. Expect **200** (idempotent retry).\n3. Use the same email with a different `customerId`. Expect **409 DUPLICATE_CREDENTIAL**.\n4. Omit or change the key. Expect **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{internalCustomerId}}\",\n  \"email\": \"{{internalEmail}}\",\n  \"password\": \"Sup3rSecret\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send an email directly (notification-service)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{notificationServiceUrl}}/internal/notifications/email",
+              "host": [
+                "{{notificationServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "notifications",
+                "email"
+              ]
+            },
+            "description": "Calls notification-service directly on port 8086. Afterwards read the email in Mailpit (http://localhost:8025).\n\n---\n\n**Send a templated email**\n\nSends one email using a built-in template. **Internal only.**\n\n### How it works\nThe template decides the subject and wording; you supply the variables (for example the code or link). The send is logged as `SENT` or `FAILED` **without the message body**, because it can hold codes.\nRequired variables: `PASSWORD_RESET` -> `resetLink`, `expiresInMinutes`; `LOGIN_OTP` and `MFA_ENABLE_OTP` -> `code`, `expiresInMinutes`; `PASSWORD_CHANGED` -> none.\n\n### How to test (direct call, development only)\n1. Send `{\"type\":\"LOGIN_OTP\",\"recipient\":\"test@example.com\",\"variables\":{\"code\":\"123456\",\"expiresInMinutes\":\"5\"}}` with the `X-Internal-Api-Key` header. Expect **201**.\n2. Open Mailpit at http://localhost:8025 and read the email.\n3. Omit `code`: **400 INVALID_NOTIFICATION**. Use a recipient containing a line break: **400**.\n4. Omit or change the key: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"LOGIN_OTP\",\n  \"recipient\": \"test@example.com\",\n  \"variables\": {\n    \"code\": \"123456\",\n    \"expiresInMinutes\": \"5\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"delivery recorded as SENT\", () => pm.expect(pm.response.json().status).to.eql(\"SENT\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send an email with a missing variable (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{notificationServiceUrl}}/internal/notifications/email",
+              "host": [
+                "{{notificationServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "notifications",
+                "email"
+              ]
+            },
+            "description": "**Send a templated email**\n\nSends one email using a built-in template. **Internal only.**\n\n### How it works\nThe template decides the subject and wording; you supply the variables (for example the code or link). The send is logged as `SENT` or `FAILED` **without the message body**, because it can hold codes.\nRequired variables: `PASSWORD_RESET` -> `resetLink`, `expiresInMinutes`; `LOGIN_OTP` and `MFA_ENABLE_OTP` -> `code`, `expiresInMinutes`; `PASSWORD_CHANGED` -> none.\n\n### How to test (direct call, development only)\n1. Send `{\"type\":\"LOGIN_OTP\",\"recipient\":\"test@example.com\",\"variables\":{\"code\":\"123456\",\"expiresInMinutes\":\"5\"}}` with the `X-Internal-Api-Key` header. Expect **201**.\n2. Open Mailpit at http://localhost:8025 and read the email.\n3. Omit `code`: **400 INVALID_NOTIFICATION**. Use a recipient containing a line break: **400**.\n4. Omit or change the key: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"LOGIN_OTP\",\n  \"recipient\": \"test@example.com\",\n  \"variables\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error is INVALID_NOTIFICATION\", () => pm.expect(pm.response.json().error).to.eql(\"INVALID_NOTIFICATION\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
