@@ -21,6 +21,9 @@ public class Credential {
     @Column(name = "password_hash", nullable = false)
     private String passwordHash;
 
+    @Column(name = "mfa_enabled", nullable = false)
+    private boolean mfaEnabled;
+
     @Column(name = "failed_attempts", nullable = false)
     private int failedAttempts;
 
@@ -51,6 +54,7 @@ public class Credential {
     public UUID getCustomerId() { return customerId; }
     public String getEmail() { return email; }
     public String getPasswordHash() { return passwordHash; }
+    public boolean isMfaEnabled() { return mfaEnabled; }
     public int getFailedAttempts() { return failedAttempts; }
     public Instant getLockedUntil() { return lockedUntil; }
 }

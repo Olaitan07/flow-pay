@@ -11,7 +11,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 
 class PathRateLimitFilterTest {
 
-    private final PathRateLimitFilter filter = new PathRateLimitFilter("registration", "POST", "/api/v1/users",
+    private final PathRateLimitFilter filter = new PathRateLimitFilter("registration", "POST", java.util.Set.of("/api/v1/users"),
             new FixedWindowRateLimiter(2, Duration.ofMinutes(1), Clock.systemUTC()));
 
     private MockHttpServletResponse call(String method, String path, String ip) throws Exception {
@@ -35,8 +35,26 @@ class PathRateLimitFilterTest {
     }
 
     @Test
+    void endpointsInOneGroupShareTheSameBudget() throws Exception {
+        var group = new PathRateLimitFilter("login", "POST",
+                java.util.Set.of("/api/v1/auth/login", "/api/v1/auth/login/verify"),
+                new FixedWindowRateLimiter(2, Duration.ofMinutes(1), Clock.systemUTC()));
+        int[] statuses = new int[3];
+        String[] paths = {"/api/v1/auth/login", "/api/v1/auth/login/verify", "/api/v1/auth/login/verify"};
+        for (int i = 0; i < 3; i++) {
+            var request = new MockHttpServletRequest("POST", paths[i]);
+            request.setRemoteAddr("6.6.6.6");
+            var response = new MockHttpServletResponse();
+            group.doFilter(request, response, new MockFilterChain());
+            statuses[i] = response.getStatus();
+        }
+
+        assertThat(statuses).containsExactly(200, 200, 429);
+    }
+
+    @Test
     void eachFilterOnlyCountsItsOwnEndpoint() throws Exception {
-        var loginFilter = new PathRateLimitFilter("login", "POST", "/api/v1/auth/login",
+        var loginFilter = new PathRateLimitFilter("login", "POST", java.util.Set.of("/api/v1/auth/login"),
                 new FixedWindowRateLimiter(1, Duration.ofMinutes(1), Clock.systemUTC()));
         var first = new MockHttpServletResponse();
         var second = new MockHttpServletResponse();

@@ -50,6 +50,27 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", ex.getMessage(), request);
     }
 
+    @ExceptionHandler(InvalidResetTokenException.class)
+    ResponseEntity<ErrorResponse> handleInvalidResetToken(InvalidResetTokenException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, "INVALID_RESET_TOKEN", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(InvalidMfaCodeException.class)
+    ResponseEntity<ErrorResponse> handleInvalidMfaCode(InvalidMfaCodeException ex, HttpServletRequest request) {
+        return build(HttpStatus.UNAUTHORIZED, "INVALID_MFA_CODE", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(MfaAlreadyEnabledException.class)
+    ResponseEntity<ErrorResponse> handleMfaAlreadyEnabled(MfaAlreadyEnabledException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, "MFA_ALREADY_ENABLED", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(MfaUnavailableException.class)
+    ResponseEntity<ErrorResponse> handleMfaUnavailable(MfaUnavailableException ex, HttpServletRequest request) {
+        log.error("Could not deliver verification code: {}", ex.getCause() == null ? "" : ex.getCause().getMessage());
+        return build(HttpStatus.SERVICE_UNAVAILABLE, "MFA_UNAVAILABLE", ex.getMessage(), request);
+    }
+
     @ExceptionHandler(DuplicateCredentialException.class)
     ResponseEntity<ErrorResponse> handleDuplicate(DuplicateCredentialException ex, HttpServletRequest request) {
         return build(HttpStatus.CONFLICT, "DUPLICATE_CREDENTIAL", ex.getMessage(), request);

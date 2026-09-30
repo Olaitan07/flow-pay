@@ -129,7 +129,9 @@ class JwtAuthenticationFilterTest {
     @Test
     void publicEndpointsNeedNoToken_butClientIdentityHeaderIsStillStripped() throws Exception {
         for (String[] endpoint : new String[][] {{"POST", "/api/v1/users"}, {"POST", "/api/v1/auth/login"},
-                {"POST", "/api/v1/auth/refresh"}, {"POST", "/api/v1/auth/logout"}, {"GET", "/actuator/health"}}) {
+                {"POST", "/api/v1/auth/login/verify"}, {"POST", "/api/v1/auth/password-reset/request"},
+                {"POST", "/api/v1/auth/password-reset/confirm"}, {"POST", "/api/v1/auth/refresh"},
+                {"POST", "/api/v1/auth/logout"}, {"GET", "/actuator/health"}}) {
             var outcome = call(endpoint[0], endpoint[1], null, "someone-else");
 
             assertThat(outcome.reachedService()).as(endpoint[1]).isTrue();
@@ -143,5 +145,10 @@ class JwtAuthenticationFilterTest {
         assertThat(call("PATCH", "/api/v1/users/abc", null, null).status()).isEqualTo(401);
         assertThat(call("POST", "/api/v1/auth/logout-all", null, null).status()).isEqualTo(401);
         assertThat(call("POST", "/internal/credentials", null, null).status()).isEqualTo(401);
+        assertThat(call("POST", "/internal/notifications/email", null, null).status()).isEqualTo(401);
+        // MFA management needs a signed-in customer
+        assertThat(call("POST", "/api/v1/auth/mfa/enable/request", null, null).status()).isEqualTo(401);
+        assertThat(call("POST", "/api/v1/auth/mfa/enable/confirm", null, null).status()).isEqualTo(401);
+        assertThat(call("POST", "/api/v1/auth/mfa/disable", null, null).status()).isEqualTo(401);
     }
 }

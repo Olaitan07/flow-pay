@@ -43,6 +43,12 @@ flowpay:
     login:
       max-requests: ${LOGIN_RATE_LIMIT_MAX:10}
       window: ${LOGIN_RATE_LIMIT_WINDOW:1m}
+    password-reset:
+      max-requests: ${PASSWORD_RESET_RATE_LIMIT_MAX:5}
+      window: ${PASSWORD_RESET_RATE_LIMIT_WINDOW:1m}
+    mfa:
+      max-requests: ${MFA_RATE_LIMIT_MAX:10}
+      window: ${MFA_RATE_LIMIT_WINDOW:1m}
   security:
     jwt:
       public-key: ${JWT_PUBLIC_KEY}

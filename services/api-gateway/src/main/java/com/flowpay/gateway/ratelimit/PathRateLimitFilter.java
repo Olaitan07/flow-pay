@@ -6,13 +6,14 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.time.Instant;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Throttles one endpoint (method + path) per client address. Used for registration, which reveals whether an
+ * Throttles a group of endpoints (one method, shared budget) per client address. Used for registration, which reveals whether an
  * email or phone is taken, and for login, where per-account lockout alone does not stop one address trying
  * many accounts.
  */
@@ -21,22 +22,24 @@ public class PathRateLimitFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(PathRateLimitFilter.class);
 
     private final String method;
-    private final String path;
+    private final Set<String> paths;
     private final String name;
     private final FixedWindowRateLimiter limiter;
 
-    public PathRateLimitFilter(String name, String method, String path, FixedWindowRateLimiter limiter) {
+    public PathRateLimitFilter(String name, String method, Set<String> paths, FixedWindowRateLimiter limiter) {
         this.name = name;
         this.method = method;
-        this.path = path;
+        this.paths = paths;
         this.limiter = limiter;
     }
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String requested = request.getRequestURI();
-        boolean samePath = requested.equals(path) || requested.equals(path + "/");
-        return !(samePath && method.equalsIgnoreCase(request.getMethod()));
+        if (requested.length() > 1 && requested.endsWith("/")) {
+            requested = requested.substring(0, requested.length() - 1);
+        }
+        return !(paths.contains(requested) && method.equalsIgnoreCase(request.getMethod()));
     }
 
     @Override
