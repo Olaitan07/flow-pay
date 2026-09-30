@@ -4,6 +4,7 @@ import java.security.KeyFactory;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -32,8 +33,9 @@ public class SecurityConfiguration {
     }
 
     @Bean
-    FilterRegistrationBean<JwtAuthenticationFilter> jwtAuthenticationFilter(JwtDecoder decoder) {
-        var registration = new FilterRegistrationBean<>(new JwtAuthenticationFilter(decoder));
+    FilterRegistrationBean<JwtAuthenticationFilter> jwtAuthenticationFilter(
+            JwtDecoder decoder, @Value("${flowpay.docs.enabled:false}") boolean documentationPublic) {
+        var registration = new FilterRegistrationBean<>(new JwtAuthenticationFilter(decoder, documentationPublic));
         // After the rate limiters, so floods of bad tokens on login/registration are throttled first.
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
         return registration;

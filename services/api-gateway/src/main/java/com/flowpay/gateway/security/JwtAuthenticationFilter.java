@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.time.Instant;
+import java.util.List;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,16 +36,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             "POST /api/v1/auth/logout",       // same
             "GET /actuator/health");
 
-    private final JwtDecoder decoder;
+    /** Swagger UI and the spec files it loads. Only public when documentation is enabled (development). */
+    private static final List<String> DOCUMENTATION_PREFIXES = List.of(
+            "/swagger-ui", "/openapi/", "/v3/api-docs", "/webjars/");
 
-    public JwtAuthenticationFilter(JwtDecoder decoder) {
+    private final JwtDecoder decoder;
+    private final boolean documentationPublic;
+
+    public JwtAuthenticationFilter(JwtDecoder decoder, boolean documentationPublic) {
         this.decoder = decoder;
+        this.documentationPublic = documentationPublic;
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (isPublic(request)) {
+        if (isPublic(request) || isPublicDocumentation(request)) {
             chain.doFilter(new AuthenticatedRequest(request, null), response);
             return;
         }
@@ -66,6 +73,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             log.warn("Rejected access token on {}: {}", request.getRequestURI(), ex.getClass().getSimpleName());
             reject(request, response);
         }
+    }
+
+    private boolean isPublicDocumentation(HttpServletRequest request) {
+        if (!documentationPublic || !"GET".equals(request.getMethod())) {
+            return false;
+        }
+        String path = request.getRequestURI();
+        return DOCUMENTATION_PREFIXES.stream().anyMatch(path::startsWith);
     }
 
     private static boolean isPublic(HttpServletRequest request) {

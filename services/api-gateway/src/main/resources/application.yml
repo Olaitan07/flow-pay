@@ -36,6 +36,8 @@ management:
         include: health,info
 
 flowpay:
+  docs:
+    enabled: ${DOCS_ENABLED:true}
   rate-limit:
     registration:
       max-requests: ${REGISTRATION_RATE_LIMIT_MAX:5}
@@ -53,3 +55,18 @@ flowpay:
     jwt:
       public-key: ${JWT_PUBLIC_KEY}
       issuer: flowpay-auth
+
+# Swagger UI at http://localhost:8080/swagger-ui.html, showing the merged specs in static/openapi/
+# (regenerate them with scripts/build-api-docs.py). Set DOCS_ENABLED=false in production.
+springdoc:
+  api-docs:
+    enabled: ${DOCS_ENABLED:true}
+  swagger-ui:
+    enabled: ${DOCS_ENABLED:true}
+    persist-authorization: true
+    try-it-out-enabled: true
+    urls:
+      - name: FlowPay API (through the gateway)
+        url: /openapi/flowpay-openapi.json
+      - name: Internal service APIs (direct ports)
+        url: /openapi/flowpay-internal-openapi.json
