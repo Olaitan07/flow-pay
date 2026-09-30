@@ -15,6 +15,8 @@ spring:
             - id: user-service
               uri: ${USER_SERVICE_URL:http://localhost:8082}
               predicates: [Path=/api/v1/users/**]
+              filters:
+                - RemoveRequestHeader=X-Authenticated-Customer-Id
             - id: wallet-service
               uri: ${WALLET_SERVICE_URL:http://localhost:8083}
               predicates: [Path=/api/v1/wallets/**]
