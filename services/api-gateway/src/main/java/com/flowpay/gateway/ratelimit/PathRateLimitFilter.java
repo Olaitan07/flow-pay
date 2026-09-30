@@ -8,30 +8,35 @@ import java.io.IOException;
 import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Throttles customer registration per client address. Registration reveals whether an email or phone
- * number is already taken, so unlimited attempts would let an attacker harvest registered customers.
+ * Throttles one endpoint (method + path) per client address. Used for registration, which reveals whether an
+ * email or phone is taken, and for login, where per-account lockout alone does not stop one address trying
+ * many accounts.
  */
-public class RegistrationRateLimitFilter extends OncePerRequestFilter {
+public class PathRateLimitFilter extends OncePerRequestFilter {
 
-    private static final Logger log = LoggerFactory.getLogger(RegistrationRateLimitFilter.class);
-    private static final String REGISTRATION_PATH = "/api/v1/users";
+    private static final Logger log = LoggerFactory.getLogger(PathRateLimitFilter.class);
 
+    private final String method;
+    private final String path;
+    private final String name;
     private final FixedWindowRateLimiter limiter;
 
-    public RegistrationRateLimitFilter(FixedWindowRateLimiter limiter) {
+    public PathRateLimitFilter(String name, String method, String path, FixedWindowRateLimiter limiter) {
+        this.name = name;
+        this.method = method;
+        this.path = path;
         this.limiter = limiter;
     }
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getRequestURI();
-        boolean isRegistration = path.equals(REGISTRATION_PATH) || path.equals(REGISTRATION_PATH + "/");
-        return !(isRegistration && HttpMethod.POST.matches(request.getMethod()));
+        String requested = request.getRequestURI();
+        boolean samePath = requested.equals(path) || requested.equals(path + "/");
+        return !(samePath && method.equalsIgnoreCase(request.getMethod()));
     }
 
     @Override
@@ -44,13 +49,13 @@ public class RegistrationRateLimitFilter extends OncePerRequestFilter {
             chain.doFilter(request, response);
             return;
         }
-        log.warn("Registration rate limit exceeded path={}", request.getRequestURI());
+        log.warn("Rate limit exceeded limit={} path={}", name, request.getRequestURI());
         response.setStatus(429);
         response.setHeader("Retry-After", String.valueOf(decision.retryAfterSeconds()));
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.getWriter().write("""
                 {"timestamp":"%s","status":429,"error":"RATE_LIMIT_EXCEEDED",\
-                "message":"Too many registration attempts. Try again later.","path":"%s"}"""
+                "message":"Too many attempts. Try again later.","path":"%s"}"""
                 .formatted(Instant.now(), request.getRequestURI()));
     }
 }
