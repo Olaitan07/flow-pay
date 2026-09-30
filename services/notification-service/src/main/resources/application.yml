@@ -39,3 +39,10 @@ flowpay:
     internal-api-key: ${INTERNAL_API_KEY}
   notification:
     from: ${MAIL_FROM:no-reply@flowpay.local}
+
+# API documentation (Swagger UI at /swagger-ui.html, spec at /v3/api-docs). Set DOCS_ENABLED=false in production.
+springdoc:
+  api-docs:
+    enabled: ${DOCS_ENABLED:true}
+  swagger-ui:
+    enabled: ${DOCS_ENABLED:true}
