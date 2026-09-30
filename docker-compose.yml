@@ -122,11 +122,14 @@ services:
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
       JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?set JWT_PRIVATE_KEY in .env}
       JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?set JWT_PUBLIC_KEY in .env}
+      NOTIFICATION_SERVICE_URL: http://notification-service:8086
+      PASSWORD_RESET_URL: ${PASSWORD_RESET_URL:-http://localhost:3000/reset-password}
       SPRING_DATASOURCE_URL: jdbc:postgresql://auth-db:5432/auth_db
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-flowpay}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
       auth-db: {condition: service_healthy}
+      notification-service: {condition: service_started}
 
   user-service:
     build: {context: ., args: {SERVICE: user-service}}
@@ -188,13 +191,23 @@ services:
     ports: ["8086:8086"]
     environment:
       SERVER_PORT: 8086
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      MAIL_HOST: ${MAIL_HOST:-mailpit}
+      MAIL_PORT: ${MAIL_PORT:-1025}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@flowpay.local}
       SPRING_DATASOURCE_URL: jdbc:postgresql://notification-db:5432/notification_db
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-flowpay}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:
       notification-db: {condition: service_healthy}
+      mailpit: {condition: service_started}
       kafka: {condition: service_started}
+
+  # Local SMTP server that catches every email; read them at http://localhost:8025. Not for production.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["8025:8025", "1025:1025"]
 
   api-gateway:
     build: {context: ., args: {SERVICE: api-gateway}}

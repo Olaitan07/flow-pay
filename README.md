@@ -86,4 +86,10 @@ Run one service from the host against containerised infra: `docker compose up -d
 
 `auth-service` owns credentials and issues RS256-signed access tokens (15 min) plus rotating refresh tokens (7 days). The gateway verifies tokens with the public key only and forwards the caller's id to services in `X-Authenticated-Customer-Id`. Public endpoints: `POST /api/v1/users`, `POST /api/v1/auth/login|refresh|logout`, and `/actuator/health`; everything else needs `Authorization: Bearer <token>`. Do not publish service ports (8081-8086) outside a trusted network: they trust that header.
 
+**Password reset** (`POST /api/v1/auth/password-reset/request`, then `/confirm`): a single-use link valid for 30 minutes is emailed; using it changes the password, unlocks the account and signs out every device. The request endpoint answers identically for unknown emails. Set `PASSWORD_RESET_URL` to the page in your app that receives `?token=`.
+
+**Two-step verification** (opt-in, email one-time code): `POST /api/v1/auth/mfa/enable/request` then `/enable/confirm`; afterwards `login` returns `{"mfaRequired": true, "challengeId": ...}` and `POST /api/v1/auth/login/verify` with the emailed 6-digit code completes it. `POST /api/v1/auth/mfa/disable` needs the password.
+
+**Email in development:** `notification-service` sends through SMTP. Compose runs Mailpit, which catches every message: open http://localhost:8025 to read them. Point `MAIL_HOST`/`MAIL_PORT` at a real SMTP server for production (authentication settings are not wired yet).
+
 `docker compose down -v` deletes all volumes and their data; use it only for an intentional reset.
