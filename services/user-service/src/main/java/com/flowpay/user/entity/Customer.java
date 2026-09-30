@@ -31,9 +31,6 @@ public class Customer {
     @Column(name = "phone_number", nullable = false)
     private String phoneNumber;
 
-    @Column(name = "password_hash", nullable = false)
-    private String passwordHash;
-
     @Column(nullable = false)
     private String country;
 
@@ -67,13 +64,12 @@ public class Customer {
     }
 
     public Customer(String firstName, String lastName, String email, String phoneNumber,
-                    String passwordHash, String country) {
+                    String country) {
         this.id = UUID.randomUUID();
         this.firstName = firstName;
         this.lastName = lastName;
         this.email = email;
         this.phoneNumber = phoneNumber;
-        this.passwordHash = passwordHash;
         this.country = country;
         this.status = CustomerStatus.PENDING_VERIFICATION;
     }
@@ -119,7 +115,6 @@ public class Customer {
     public String getLastName() { return lastName; }
     public String getEmail() { return email; }
     public String getPhoneNumber() { return phoneNumber; }
-    public String getPasswordHash() { return passwordHash; }
     public String getCountry() { return country; }
     public String getAddressLine1() { return addressLine1; }
     public String getAddressLine2() { return addressLine2; }

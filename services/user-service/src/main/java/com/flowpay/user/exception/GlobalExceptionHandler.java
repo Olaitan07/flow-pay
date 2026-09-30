@@ -50,6 +50,14 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "DUPLICATE_CUSTOMER", ex.getMessage(), request);
     }
 
+    @ExceptionHandler(RegistrationUnavailableException.class)
+    ResponseEntity<ErrorResponse> handleRegistrationUnavailable(RegistrationUnavailableException ex,
+                                                                HttpServletRequest request) {
+        log.error("Registration failed: {}", ex.getMessage());
+        return build(HttpStatus.SERVICE_UNAVAILABLE, "REGISTRATION_UNAVAILABLE",
+                "Registration is temporarily unavailable. Please try again.", request);
+    }
+
     @ExceptionHandler(ProfileUpdateNotAllowedException.class)
     ResponseEntity<ErrorResponse> handleUpdateNotAllowed(ProfileUpdateNotAllowedException ex,
                                                          HttpServletRequest request) {
