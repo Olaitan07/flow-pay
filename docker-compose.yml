@@ -119,6 +119,7 @@ services:
     ports: ["8081:8081"]
     environment:
       SERVER_PORT: 8081
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
       JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?set JWT_PRIVATE_KEY in .env}
       JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?set JWT_PUBLIC_KEY in .env}
@@ -136,6 +137,7 @@ services:
     ports: ["8082:8082"]
     environment:
       SERVER_PORT: 8082
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
       AUTH_SERVICE_URL: http://auth-service:8081
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
       SPRING_DATASOURCE_URL: jdbc:postgresql://user-db:5432/user_db
@@ -191,6 +193,7 @@ services:
     ports: ["8086:8086"]
     environment:
       SERVER_PORT: 8086
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
       MAIL_HOST: ${MAIL_HOST:-mailpit}
       MAIL_PORT: ${MAIL_PORT:-1025}
@@ -213,6 +216,7 @@ services:
     build: {context: ., args: {SERVICE: api-gateway}}
     ports: ["8080:8080"]
     environment:
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
       AUTH_SERVICE_URL: http://auth-service:8081
       USER_SERVICE_URL: http://user-service:8082
       WALLET_SERVICE_URL: http://wallet-service:8083

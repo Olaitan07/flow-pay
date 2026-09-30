@@ -1,0 +1,1271 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowPay API",
+    "version": "v1",
+    "description": "FlowPay is a digital wallet platform. This is the **public API**, reached through the gateway at\n`http://localhost:8080`.\n\n## Quick start\n1. **Register** - `POST /api/v1/users`\n2. **Log in** - `POST /api/v1/auth/login` -> copy the `accessToken`\n3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.\n4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`\n\n## How security works\n* Only registration, login, refresh, logout, password reset and the health check are public.\n* Everything else needs `Authorization: Bearer <accessToken>`. Tokens are JWTs signed with RS256 and last 15 minutes;\n  renew them with `POST /api/v1/auth/refresh` (refresh tokens are single use).\n* You only ever see and change **your own** data. Another customer's id returns `404`.\n* Several endpoints are rate limited per IP address and return `429` with a `Retry-After` header when exceeded.\n* Every error has the same shape: `{timestamp, status, error, message, path}`. Branch on `error`, not `message`.\n\n## Emails in development\nPassword reset and two-step verification send real emails to a local inbox (Mailpit): http://localhost:8025.\n"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Local gateway (docker compose)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "1. Customers",
+      "description": "Register an account, then view and maintain your own profile."
+    },
+    {
+      "name": "2. Authentication",
+      "description": "Sign in, keep a session alive, and sign out."
+    },
+    {
+      "name": "3. Password reset",
+      "description": "Recover an account when the password is forgotten. Both steps are public."
+    },
+    {
+      "name": "4. Two-step verification",
+      "description": "Optional extra security: after the password, a 6-digit code is emailed. All three calls need a bearer token."
+    }
+  ],
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "2. Authentication"
+        ],
+        "summary": "Log in with email and password",
+        "description": "Signs a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Tokens, or an MFA challenge when two-step verification is enabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TokenResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MfaChallengeResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "INVALID_CREDENTIALS (wrong password, unknown email, or locked account).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMIT_EXCEEDED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "MFA_UNAVAILABLE: two-step is on but the code email could not be sent. No tokens issued.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login/verify": {
+      "post": {
+        "tags": [
+          "2. Authentication"
+        ],
+        "summary": "Finish login with the emailed code",
+        "description": "Second step of login for customers who turned on two-step verification. **Public.** Shares the login rate limit.\n\n### How it works\nThe code is 6 digits, valid **5 minutes**, usable **once**, with **5 guesses**. Wrong guesses also count towards the account lockout.\nEvery failure (wrong code, expired, already used, unknown challenge) returns the same `401 INVALID_MFA_CODE`.\n\n### How to test\n1. Enable two-step verification, then call `POST /api/v1/auth/login`. Copy `challengeId`.\n2. Open the inbox (Mailpit at http://localhost:8025) and read the 6-digit code.\n3. Send `challengeId` + `code`. Expect **200** with tokens.\n4. Send the same code again. Expect **401 INVALID_MFA_CODE** (single use).\n5. Request a new login code and send `000000` five times. The code is now dead, even the right one.\n6. A malformed code such as `12ab` returns **400**.\n",
+        "operationId": "verifyLogin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOtpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Login complete.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR: challengeId or code malformed.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "INVALID_MFA_CODE.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMIT_EXCEEDED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "2. Authentication"
+        ],
+        "summary": "Log out this session",
+        "description": "Ends the session that the refresh token belongs to. **Public** (the refresh token is the proof).\n\n### How it works\nThe refresh token (and every token in its chain) is revoked. Calling it again, or with an unknown token, still returns `204`, so it is safe to repeat and reveals nothing.\nThe access token already issued stays valid until it expires (at most 15 minutes).\n\n### How to test\n1. Log in and copy `refreshToken`.\n2. Call logout with it. Expect **204**.\n3. Call refresh with the same token. Expect **401**.\n4. Call logout again. Still **204**.\n",
+        "operationId": "logout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Session ended (or there was nothing to end)."
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout-all": {
+      "post": {
+        "tags": [
+          "2. Authentication"
+        ],
+        "summary": "Log out everywhere",
+        "description": "Ends **every** session of the signed-in customer (phone, laptop, ...). **Requires a bearer token.**\n\n### How it works\nAll of the customer's refresh tokens are revoked. Existing access tokens expire on their own within 15 minutes.\n\n### How to test\n1. Log in twice to create two sessions; keep both `refreshToken` values and one `accessToken`.\n2. Call this endpoint with the access token. Expect **204**.\n3. Call refresh with each refresh token. Both return **401**.\n4. Call it without a token. Expect **401 UNAUTHENTICATED**.\n",
+        "operationId": "logoutAll",
+        "responses": {
+          "204": {
+            "description": "All sessions ended."
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/mfa/disable": {
+      "post": {
+        "tags": [
+          "4. Two-step verification"
+        ],
+        "summary": "Turn off two-step verification",
+        "description": "Turns two-step verification off. **Requires a bearer token and the current password.**\n\n### How it works\nThe password is required so that a stolen access token alone cannot weaken the account. Wrong passwords here count towards the account lockout.\n\n### How to test\n1. With two-step on, send a wrong password. Expect **401 INVALID_CREDENTIALS** (still enabled).\n2. Send the correct password. Expect **204**.\n3. Log in: you get tokens directly again.\n",
+        "operationId": "disableMfa",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisableMfaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Two-step verification is now off."
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED or INVALID_CREDENTIALS (wrong password).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/mfa/enable/confirm": {
+      "post": {
+        "tags": [
+          "4. Two-step verification"
+        ],
+        "summary": "Confirm the code and turn on two-step verification",
+        "description": "Turns two-step verification on once the emailed code is proven. **Requires a bearer token.**\n\n### How it works\nThe code must belong to **your** account and to this purpose (a login code cannot be used here, and vice versa). Same rules as login codes: 5 minutes, single use, 5 guesses.\nFrom then on, `POST /api/v1/auth/login` returns `mfaRequired` instead of tokens.\n\n### How to test\n1. After `enable/request`, send the `challengeId` and the emailed `code`. Expect **204**.\n2. Log in again: the response is now `{\"mfaRequired\": true, ...}`.\n3. Send a wrong code: **401 INVALID_MFA_CODE**.\n4. Send a code that belongs to someone else's challenge: also **401**.\n",
+        "operationId": "confirmEnableMfa",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOtpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Two-step verification is now on."
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED or INVALID_MFA_CODE.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/mfa/enable/request": {
+      "post": {
+        "tags": [
+          "4. Two-step verification"
+        ],
+        "summary": "Start turning on two-step verification",
+        "description": "Emails a confirmation code. **Requires a bearer token.** Limited to 10 requests per minute per IP address (shared with the other MFA calls).\n\n### How it works\nA code is emailed first, so you cannot lock yourself out with an address that does not work. Nothing changes until you confirm the code.\nRequesting again replaces the previous code. If two-step is already on you get `409`.\n\n### How to test\n1. Log in and authorize with the `accessToken`.\n2. Call this endpoint. Expect **200** with a `challengeId`. Copy it.\n3. Open the inbox (Mailpit at http://localhost:8025) and read the code.\n4. Continue with `POST /api/v1/auth/mfa/enable/confirm`.\n5. Without a token: **401**. After enabling, calling this again: **409 MFA_ALREADY_ENABLED**.\n",
+        "operationId": "requestEnableMfa",
+        "responses": {
+          "200": {
+            "description": "A code was emailed.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaChallengeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "MFA_ALREADY_ENABLED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "MFA_UNAVAILABLE: the code email could not be sent.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/password-reset/confirm": {
+      "post": {
+        "tags": [
+          "3. Password reset"
+        ],
+        "summary": "Set a new password using the emailed token",
+        "description": "Completes a reset. **Public.** The emailed token is the proof of ownership.\n\n### How it works\nIn one transaction: the token is used up (it works **once**), the password is changed, a locked account is **unlocked**, and **every session is signed out**. A \"password changed\" email is then sent.\nUnknown, expired and already-used tokens all return the same `400 INVALID_RESET_TOKEN`.\nA weak new password is rejected **without** using up the token, so you can retry.\n\n### How to test\n1. Request a reset and copy the `token` from the email.\n2. Send `token` + a strong `newPassword`. Expect **204**.\n3. Log in with the new password: **200**. With the old one: **401**.\n4. Send the same token again: **400 INVALID_RESET_TOKEN**.\n5. Try an old refresh token: **401** (everyone was signed out).\n6. Send `newPassword: \"weak\"` with a fresh token: **400 VALIDATION_ERROR**, and the token still works afterwards.\n",
+        "operationId": "confirmPasswordReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Password changed."
+          },
+          "400": {
+            "description": "INVALID_RESET_TOKEN or VALIDATION_ERROR (weak password).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMIT_EXCEEDED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password-reset/request": {
+      "post": {
+        "tags": [
+          "3. Password reset"
+        ],
+        "summary": "Email me a password reset link",
+        "description": "Asks for a reset link to be emailed. **Public.** Limited to 5 requests per minute per IP address (shared with `confirm`).\n\n### How it works\n* The answer is **always** `202` with the same message, whether or not the email has an account, so this cannot be used to find out who is registered.\n* If the account exists, a one-time link valid for **30 minutes** is emailed (`PASSWORD_RESET_URL?token=...`). The email is sent in the background.\n* Asking again cancels the earlier link; only the newest works.\n\n### How to test\n1. Register a customer, then call this endpoint with their email. Expect **202**.\n2. Call it with an email that does not exist. Expect the **identical 202** body.\n3. Open the inbox (Mailpit at http://localhost:8025). Only the real account received an email. Copy the `token=` value from the link.\n4. Continue with `POST /api/v1/auth/password-reset/confirm`.\n",
+        "operationId": "requestPasswordReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted. The same response for every email.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMIT_EXCEEDED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "2. Authentication"
+        ],
+        "summary": "Get a new access token",
+        "description": "Exchanges a refresh token for a fresh access token **and a new refresh token**. **Public** (the refresh token is the proof).\n\n### How it works\nRefresh tokens are **single use** (\"rotation\"). Using one returns a new pair and retires the old token.\nIf an already-used token is presented again it may have been stolen, so the **whole session is revoked**: every token in that chain stops working.\n\n### How to test\n1. Log in and copy `refreshToken`.\n2. Call refresh with it. Expect **200** and a **different** `refreshToken`.\n3. Call refresh again with the **old** token. Expect **401 INVALID_REFRESH_TOKEN**.\n4. Now try the **new** token from step 2. Also **401**: reuse ended the session. Log in again.\n",
+        "operationId": "refreshToken",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A new token pair.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "INVALID_REFRESH_TOKEN: unknown, expired, already used, or revoked.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users": {
+      "post": {
+        "tags": [
+          "1. Customers"
+        ],
+        "summary": "Register a new customer",
+        "description": "Creates a FlowPay account. **Public** (no token needed). Limited to 5 requests per minute per IP address.\n\n### How it works\n1. The request is validated (see the field rules in the schema).\n2. The email is lowercased. Email and phone number must each be unique.\n3. The customer is saved with a generated `id` and status `PENDING_VERIFICATION`.\n4. The password is sent to **auth-service**, which hashes it (BCrypt) and stores it. This service never stores or returns it.\n5. If auth-service is unavailable the whole registration is rolled back and you get `503`: there is never an account without a way to log in.\n\n### How to test\n1. Send the example body. Expect **201**, and copy the `id` from the response.\n2. Send the exact same body again. Expect **409 DUPLICATE_CUSTOMER** (same email, in any letter case).\n3. Change only the email and keep the phone number. Still **409** (phone must be unique too).\n4. Send `{}` or a weak password such as `weak`. Expect **400 VALIDATION_ERROR** listing each bad field.\n5. Send 6+ requests within a minute from one machine. Expect **429** with a `Retry-After` header.\n6. Next step: log in with `POST /api/v1/auth/login`.\n",
+        "operationId": "registerCustomer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterCustomerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Account created. The Location header points at the profile URL.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR or MALFORMED_REQUEST.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "DUPLICATE_CUSTOMER: email or phone number already registered.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMIT_EXCEEDED. Wait for Retry-After seconds.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "REGISTRATION_UNAVAILABLE: auth-service could not store the login. Nothing was created; retry.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{id}": {
+      "get": {
+        "tags": [
+          "1. Customers"
+        ],
+        "summary": "View my profile",
+        "description": "Returns the signed-in customer's own profile. **Requires a bearer token.**\n\n### How it works\nThe gateway verifies the access token and tells this service who is calling. You can only read **your own** profile:\nany other id, and any id that does not exist, returns the same `404`, so the API never reveals which customers exist.\n\n### How to test\n1. Register (`POST /api/v1/users`) and log in (`POST /api/v1/auth/login`). Put the `accessToken` in the Authorize box (or the `Authorization: Bearer ...` header).\n2. Call this endpoint with the `id` from registration. Expect **200** and your profile.\n3. Call it with a different UUID, e.g. `00000000-0000-0000-0000-000000000001`. Expect **404 CUSTOMER_NOT_FOUND**.\n4. Call it with no token. Expect **401 UNAUTHENTICATED**.\n5. Call it with `not-a-uuid`. Expect **400**.\n",
+        "operationId": "viewProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Your customer id (from registration).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "example": "6fbf8203-6ee0-4b39-aa85-d721d712480c"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Your profile.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerProfileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "MALFORMED_REQUEST: the id is not a valid UUID.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED: missing, expired or invalid access token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "CUSTOMER_NOT_FOUND: not your profile, or no such customer.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "1. Customers"
+        ],
+        "summary": "Update my profile",
+        "description": "Changes the allowed parts of your profile. **Requires a bearer token.** Send only the fields you want to change.\n\n### What you can change\n| Field | Rule |\n|---|---|\n| `addressLine1`, `addressLine2`, `city`, `state`, `postalCode` | While the account is `PENDING_VERIFICATION` or `ACTIVE`. An empty string clears the field. |\n| `firstName`, `lastName` | Only while `PENDING_VERIFICATION`. They lock once the account is verified. |\n| `email`, `phoneNumber`, `country` | **Never** here (they need verification). Sending them returns `422 PROFILE_FIELD_LOCKED`. |\n| Any field on a `SUSPENDED`, `BLOCKED` or `CLOSED` account | `422 ACCOUNT_NOT_EDITABLE`. |\n\n### How to test\n1. Sign in and use your `id`. Send `{\"city\": \"Lagos\", \"addressLine1\": \"12 Marina Road\"}`. Expect **200** with the new values.\n2. Send `{\"firstName\": \"Adaeze\"}`. Expect **200** (a new account is still `PENDING_VERIFICATION`).\n3. Send `{\"email\": \"new@example.com\"}`. Expect **422 PROFILE_FIELD_LOCKED**.\n4. Send `{\"city\": \"\"}`. The city is cleared (`null`).\n5. Send `{\"firstName\": \"   \"}`. Expect **400**.\n6. Use another customer's id. Expect **404**. No token: **401**.\n7. To see the name lock, set the account to ACTIVE in the database (there is no verification flow yet) and change `firstName` again: **422**.\n",
+        "operationId": "updateProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Your customer id.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "example": "6fbf8203-6ee0-4b39-aa85-d721d712480c"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCustomerProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The updated profile.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerProfileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR or MALFORMED_REQUEST.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "CUSTOMER_NOT_FOUND: not your profile, or no such customer.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONCURRENT_UPDATE: another request changed the profile at the same moment; reload and retry.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "PROFILE_FIELD_LOCKED or ACCOUNT_NOT_EDITABLE.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CustomerProfileResponse": {
+        "type": "object",
+        "description": "A customer's profile. Never includes any password data.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "6fbf8203-6ee0-4b39-aa85-d721d712480c"
+          },
+          "firstName": {
+            "type": "string",
+            "example": "Ada"
+          },
+          "lastName": {
+            "type": "string",
+            "example": "Obi"
+          },
+          "email": {
+            "type": "string",
+            "example": "ada.obi@example.com"
+          },
+          "phoneNumber": {
+            "type": "string",
+            "example": "+2348012345678"
+          },
+          "country": {
+            "type": "string",
+            "example": "NG"
+          },
+          "addressLine1": {
+            "type": "string",
+            "description": "Null until set.",
+            "example": "12 Marina Road"
+          },
+          "addressLine2": {
+            "type": "string",
+            "description": "Null until set.",
+            "example": "Apt 4B"
+          },
+          "city": {
+            "type": "string",
+            "description": "Null until set.",
+            "example": "Lagos"
+          },
+          "state": {
+            "type": "string",
+            "description": "Null until set.",
+            "example": "Lagos"
+          },
+          "postalCode": {
+            "type": "string",
+            "description": "Null until set.",
+            "example": "101233"
+          },
+          "status": {
+            "type": "string",
+            "description": "PENDING_VERIFICATION, ACTIVE, SUSPENDED, BLOCKED or CLOSED.",
+            "enum": [
+              "PENDING_VERIFICATION",
+              "ACTIVE",
+              "SUSPENDED",
+              "BLOCKED",
+              "CLOSED"
+            ],
+            "example": "PENDING_VERIFICATION"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-30T16:13:30.942Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-30T16:20:00.000Z"
+          }
+        }
+      },
+      "CustomerResponse": {
+        "type": "object",
+        "description": "The account that was just created.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique customer id. Use it in /api/v1/users/{id}.",
+            "example": "6fbf8203-6ee0-4b39-aa85-d721d712480c"
+          },
+          "firstName": {
+            "type": "string",
+            "example": "Ada"
+          },
+          "lastName": {
+            "type": "string",
+            "example": "Obi"
+          },
+          "email": {
+            "type": "string",
+            "description": "Always lowercase.",
+            "example": "ada.obi@example.com"
+          },
+          "phoneNumber": {
+            "type": "string",
+            "example": "+2348012345678"
+          },
+          "country": {
+            "type": "string",
+            "example": "NG"
+          },
+          "status": {
+            "type": "string",
+            "description": "New accounts start as PENDING_VERIFICATION.",
+            "enum": [
+              "PENDING_VERIFICATION",
+              "ACTIVE",
+              "SUSPENDED",
+              "BLOCKED",
+              "CLOSED"
+            ],
+            "example": "PENDING_VERIFICATION"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-30T16:13:30.942Z"
+          }
+        }
+      },
+      "DisableMfaRequest": {
+        "type": "object",
+        "description": "Confirms the account owner before two-step verification is turned off.",
+        "properties": {
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "The current account password.",
+            "example": "Sup3rSecret",
+            "maxLength": 128,
+            "minLength": 0
+          }
+        },
+        "required": [
+          "password"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Standard error body used by every endpoint.",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-30T16:13:30.942Z"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "HTTP status code.",
+            "example": 400
+          },
+          "error": {
+            "type": "string",
+            "description": "Stable machine-readable code to branch on.",
+            "example": "VALIDATION_ERROR"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation.",
+            "example": "email must be a well-formed email address"
+          },
+          "path": {
+            "type": "string",
+            "description": "The request path.",
+            "example": "/api/v1/users"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "description": "Credentials used to sign in.",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email used at registration (case-insensitive).",
+            "example": "ada.obi@example.com",
+            "maxLength": 254,
+            "minLength": 0
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "The account password.",
+            "example": "Sup3rSecret",
+            "maxLength": 128,
+            "minLength": 0
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "MessageResponse": {
+        "type": "object",
+        "description": "A plain confirmation message.",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "If an account exists for that email, a reset link has been sent."
+          }
+        }
+      },
+      "MfaChallengeResponse": {
+        "type": "object",
+        "description": "A one-time code was emailed. Submit it with this challengeId to continue.",
+        "properties": {
+          "mfaRequired": {
+            "type": "boolean",
+            "description": "Always true: the client must complete a second step.",
+            "example": true
+          },
+          "challengeId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifies the emailed code. Send it with the code.",
+            "example": "9636018a-2f90-46a7-add3-2549b9841b5f"
+          },
+          "expiresIn": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until the code expires.",
+            "example": 300
+          }
+        }
+      },
+      "PasswordResetConfirmRequest": {
+        "type": "object",
+        "description": "The token from the reset email plus the new password.",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The value of ?token= in the emailed link. Single use, valid 30 minutes.",
+            "example": "SsCed_IPmKTsFYekt7bVScwtaMIB1whQezv9bXeKxrI",
+            "maxLength": 200,
+            "minLength": 0
+          },
+          "newPassword": {
+            "type": "string",
+            "format": "password",
+            "description": "8-72 characters with an uppercase letter, a lowercase letter and a digit.",
+            "example": "Brand9NewPass",
+            "maxLength": 72,
+            "minLength": 8,
+            "pattern": "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).*$"
+          }
+        },
+        "required": [
+          "newPassword",
+          "token"
+        ]
+      },
+      "PasswordResetRequest": {
+        "type": "object",
+        "description": "Asks for a password reset link to be emailed.",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The account email. The response is identical whether or not it exists.",
+            "example": "ada.obi@example.com",
+            "maxLength": 254,
+            "minLength": 0
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "RefreshTokenRequest": {
+        "type": "object",
+        "description": "A refresh token previously issued by login, login/verify or refresh.",
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "description": "The opaque refresh token. Each one works only once.",
+            "example": "SsCed_IPmKTsFYekt7bVScwtaMIB1whQezv9bXeKxrI",
+            "maxLength": 200,
+            "minLength": 0
+          }
+        },
+        "required": [
+          "refreshToken"
+        ]
+      },
+      "RegisterCustomerRequest": {
+        "type": "object",
+        "description": "Details needed to open a FlowPay account.",
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "description": "Given name.",
+            "example": "Ada",
+            "maxLength": 100,
+            "minLength": 0
+          },
+          "lastName": {
+            "type": "string",
+            "description": "Family name.",
+            "example": "Obi",
+            "maxLength": 100,
+            "minLength": 0
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Email address. Stored in lowercase and must be unique. Used to log in.",
+            "example": "ada.obi@example.com",
+            "maxLength": 254,
+            "minLength": 0
+          },
+          "phoneNumber": {
+            "type": "string",
+            "description": "Phone number in international format (E.164). Must be unique.",
+            "example": "+2348012345678",
+            "minLength": 1,
+            "pattern": "^\\+[1-9]\\d{7,14}$"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "8-72 characters with at least one uppercase letter, one lowercase letter and one digit. Hashed by auth-service; never stored or returned by user-service.",
+            "example": "Sup3rSecret",
+            "maxLength": 72,
+            "minLength": 8,
+            "pattern": "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).*$"
+          },
+          "country": {
+            "type": "string",
+            "description": "Country as an ISO 3166-1 alpha-2 code.",
+            "example": "NG",
+            "minLength": 1,
+            "pattern": "^[A-Z]{2}$"
+          }
+        },
+        "required": [
+          "country",
+          "email",
+          "firstName",
+          "lastName",
+          "password",
+          "phoneNumber"
+        ]
+      },
+      "TokenResponse": {
+        "type": "object",
+        "description": "A signed-in session: a short-lived access token and a single-use refresh token.",
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "JWT (RS256). Send as 'Authorization: Bearer <token>'. Valid 15 minutes. The 'sub' claim is the customer id.",
+            "example": "eyJraWQiOiJmbG93cGF5LTEiLCJhbGciOiJSUzI1NiJ9..."
+          },
+          "tokenType": {
+            "type": "string",
+            "example": "Bearer"
+          },
+          "expiresIn": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Access token lifetime in seconds.",
+            "example": 900
+          },
+          "refreshToken": {
+            "type": "string",
+            "description": "Opaque token valid 7 days. Exchange it at /refresh; each one works once.",
+            "example": "SsCed_IPmKTsFYekt7bVScwtaMIB1whQezv9bXeKxrI"
+          }
+        }
+      },
+      "UpdateCustomerProfileRequest": {
+        "type": "object",
+        "description": "Fields to change. Omit a field to leave it unchanged; send an empty string to clear an optional address field. Email, phone number and country cannot be changed here.",
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "description": "Only changeable while the account status is PENDING_VERIFICATION.",
+            "example": "Adaeze",
+            "maxLength": 100,
+            "minLength": 0,
+            "pattern": ".*\\S.*"
+          },
+          "lastName": {
+            "type": "string",
+            "description": "Only changeable while the account status is PENDING_VERIFICATION.",
+            "example": "Obi",
+            "maxLength": 100,
+            "minLength": 0,
+            "pattern": ".*\\S.*"
+          },
+          "addressLine1": {
+            "type": "string",
+            "description": "Address line 1.",
+            "example": "12 Marina Road",
+            "maxLength": 150,
+            "minLength": 0
+          },
+          "addressLine2": {
+            "type": "string",
+            "description": "Address line 2.",
+            "example": "Apt 4B",
+            "maxLength": 150,
+            "minLength": 0
+          },
+          "city": {
+            "type": "string",
+            "description": "City.",
+            "example": "Lagos",
+            "maxLength": 100,
+            "minLength": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "State or region.",
+            "example": "Lagos",
+            "maxLength": 100,
+            "minLength": 0
+          },
+          "postalCode": {
+            "type": "string",
+            "description": "Postal code.",
+            "example": "101233",
+            "maxLength": 20,
+            "minLength": 0
+          },
+          "email": {
+            "type": "string",
+            "description": "NOT changeable here. Sending it returns 422 PROFILE_FIELD_LOCKED.",
+            "example": "new@example.com"
+          },
+          "phoneNumber": {
+            "type": "string",
+            "description": "NOT changeable here. Sending it returns 422 PROFILE_FIELD_LOCKED.",
+            "example": "+2348099999999"
+          },
+          "country": {
+            "type": "string",
+            "description": "NOT changeable here. Sending it returns 422 PROFILE_FIELD_LOCKED.",
+            "example": "GH"
+          }
+        }
+      },
+      "VerifyOtpRequest": {
+        "type": "object",
+        "description": "The emailed one-time code together with the challenge it belongs to.",
+        "properties": {
+          "challengeId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The challengeId returned when the code was requested.",
+            "example": "9636018a-2f90-46a7-add3-2549b9841b5f"
+          },
+          "code": {
+            "type": "string",
+            "description": "The 6-digit code from the email. Valid 5 minutes, single use, 5 attempts.",
+            "example": "904826",
+            "minLength": 1,
+            "pattern": "^\\d{6}$"
+          }
+        },
+        "required": [
+          "challengeId",
+          "code"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Access token from POST /api/v1/auth/login (or /login/verify)."
+      }
+    }
+  }
+}

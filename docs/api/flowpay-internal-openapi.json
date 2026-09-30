@@ -1,0 +1,304 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FlowPay internal service APIs",
+    "version": "v1",
+    "description": "Service-to-service endpoints. They are **not** reachable through the gateway: call the services directly\n(auth-service on port 8081, notification-service on port 8086) with the `X-Internal-Api-Key` header\n(`INTERNAL_API_KEY` from your `.env`). Intended for development and debugging only.\n"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8081",
+      "description": "auth-service (direct)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Internal: credentials",
+      "description": "Service-to-service only. Not reachable through the gateway; call auth-service directly (port 8081) with the X-Internal-Api-Key header."
+    },
+    {
+      "name": "Internal: notifications",
+      "description": "Service-to-service only. Not reachable through the gateway; call notification-service directly (port 8086) with the X-Internal-Api-Key header."
+    }
+  ],
+  "paths": {
+    "/internal/credentials": {
+      "post": {
+        "tags": [
+          "Internal: credentials"
+        ],
+        "summary": "Store login credentials for a new customer",
+        "description": "Called by user-service right after it creates a customer. **Internal only.**\n\n### How it works\nHashes the password (BCrypt) and stores it with the email. Safe to retry: the same customer id and email returns `200` instead of creating a duplicate.\n\n### How to test (direct call, development only)\n1. Send any random `customerId` UUID with a new email and a password, with the `X-Internal-Api-Key` header. Expect **201**.\n2. Repeat the identical request. Expect **200** (idempotent retry).\n3. Use the same email with a different `customerId`. Expect **409 DUPLICATE_CREDENTIAL**.\n4. Omit or change the key. Expect **401**.\n",
+        "operationId": "createCredential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Credentials created."
+          },
+          "200": {
+            "description": "Identical credentials already existed (retry)."
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "DUPLICATE_CREDENTIAL: email or customer id already used differently.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8081",
+          "description": "auth-service (direct)"
+        }
+      ]
+    },
+    "/internal/notifications/email": {
+      "post": {
+        "tags": [
+          "Internal: notifications"
+        ],
+        "summary": "Send a templated email",
+        "description": "Sends one email using a built-in template. **Internal only.**\n\n### How it works\nThe template decides the subject and wording; you supply the variables (for example the code or link). The send is logged as `SENT` or `FAILED` **without the message body**, because it can hold codes.\nRequired variables: `PASSWORD_RESET` -> `resetLink`, `expiresInMinutes`; `LOGIN_OTP` and `MFA_ENABLE_OTP` -> `code`, `expiresInMinutes`; `PASSWORD_CHANGED` -> none.\n\n### How to test (direct call, development only)\n1. Send `{\"type\":\"LOGIN_OTP\",\"recipient\":\"test@example.com\",\"variables\":{\"code\":\"123456\",\"expiresInMinutes\":\"5\"}}` with the `X-Internal-Api-Key` header. Expect **201**.\n2. Open Mailpit at http://localhost:8025 and read the email.\n3. Omit `code`: **400 INVALID_NOTIFICATION**. Use a recipient containing a line break: **400**.\n4. Omit or change the key: **401**.\n",
+        "operationId": "sendEmail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Email handed to the mail server.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR or INVALID_NOTIFICATION (missing template variable).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "DELIVERY_FAILED: the mail server did not accept the message (recorded as FAILED).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8086",
+          "description": "notification-service (direct)"
+        }
+      ]
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateCredentialRequest": {
+        "type": "object",
+        "description": "Internal: login credentials for a newly registered customer.",
+        "properties": {
+          "customerId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The customer id created by user-service.",
+            "example": "6fbf8203-6ee0-4b39-aa85-d721d712480c"
+          },
+          "email": {
+            "type": "string",
+            "example": "ada.obi@example.com",
+            "maxLength": 254,
+            "minLength": 0
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Plain password; auth-service hashes it with BCrypt.",
+            "example": "Sup3rSecret",
+            "maxLength": 72,
+            "minLength": 8
+          }
+        },
+        "required": [
+          "customerId",
+          "email",
+          "password"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Standard error body used by every endpoint.",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-30T16:13:30.942Z"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "HTTP status code.",
+            "example": 400
+          },
+          "error": {
+            "type": "string",
+            "description": "Stable machine-readable code to branch on.",
+            "example": "VALIDATION_ERROR"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation.",
+            "example": "email must be a well-formed email address"
+          },
+          "path": {
+            "type": "string",
+            "description": "The request path.",
+            "example": "/api/v1/users"
+          }
+        }
+      },
+      "NotificationResponse": {
+        "type": "object",
+        "description": "Result of a send.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Id of the delivery record.",
+            "example": "0b7c2c62-3f2e-4e0a-9d3e-1f6a2f3d9a11"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "SENT",
+              "FAILED"
+            ],
+            "example": "SENT"
+          }
+        }
+      },
+      "SendEmailRequest": {
+        "type": "object",
+        "description": "An email to send using one of the built-in templates.",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Which template to use. PASSWORD_RESET needs resetLink and expiresInMinutes; LOGIN_OTP and MFA_ENABLE_OTP need code and expiresInMinutes; PASSWORD_CHANGED needs nothing.",
+            "enum": [
+              "PASSWORD_RESET",
+              "PASSWORD_CHANGED",
+              "LOGIN_OTP",
+              "MFA_ENABLE_OTP"
+            ],
+            "example": "LOGIN_OTP"
+          },
+          "recipient": {
+            "type": "string",
+            "format": "email",
+            "description": "Recipient address. Line breaks are rejected.",
+            "example": "ada.obi@example.com",
+            "maxLength": 254,
+            "minLength": 0,
+            "pattern": "^[^\\r\\n]+$"
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Values for the template placeholders.",
+            "example": {
+              "code": "482913",
+              "expiresInMinutes": "5"
+            }
+          }
+        },
+        "required": [
+          "recipient",
+          "type"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "internalApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Internal-Api-Key",
+        "description": "INTERNAL_API_KEY from .env."
+      }
+    }
+  }
+}

@@ -31,6 +31,7 @@ class JwtAuthenticationFilterTest {
     static KeyPair trusted;
     static KeyPair attacker;
     static JwtAuthenticationFilter filter;
+    static JwtAuthenticationFilter docsClosedFilter;
 
     @BeforeAll
     static void createKeys() throws Exception {
@@ -40,7 +41,8 @@ class JwtAuthenticationFilterTest {
         attacker = generator.generateKeyPair();
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withPublicKey((RSAPublicKey) trusted.getPublic()).build();
         decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer("flowpay-auth"));
-        filter = new JwtAuthenticationFilter(decoder);
+        filter = new JwtAuthenticationFilter(decoder, true);
+        docsClosedFilter = new JwtAuthenticationFilter(decoder, false);
     }
 
     static String token(KeyPair signWith, String issuer, String subject, Duration validFor) {
@@ -137,6 +139,20 @@ class JwtAuthenticationFilterTest {
             assertThat(outcome.reachedService()).as(endpoint[1]).isTrue();
             assertThat(outcome.customerIdSeenDownstream()).as(endpoint[1]).isNull();
         }
+    }
+
+    @Test
+    void documentationIsPublicOnlyForGetRequests_andOnlyWhenEnabled() throws Exception {
+        for (String path : new String[] {"/swagger-ui.html", "/swagger-ui/index.html", "/openapi/flowpay-openapi.json",
+                "/v3/api-docs/swagger-config", "/webjars/swagger-ui/index.css"}) {
+            assertThat(call("GET", path, null, null).reachedService()).as(path).isTrue();
+        }
+        assertThat(call("POST", "/swagger-ui/index.html", null, null).status()).isEqualTo(401);
+
+        var request = new MockHttpServletRequest("GET", "/swagger-ui.html");
+        var response = new MockHttpServletResponse();
+        docsClosedFilter.doFilter(request, response, (req, res) -> { });
+        assertThat(response.getStatus()).as("documentation switched off").isEqualTo(401);
     }
 
     @Test
