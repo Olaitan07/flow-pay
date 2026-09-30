@@ -73,7 +73,7 @@ Java 25, Spring Boot 4.0.8 and Maven multi-module (`services/*`). Services: `api
 Prerequisites: Docker Desktop, and JDK 25 + Maven only if building outside Docker. On Apple Silicon use an ARM64 JDK, e.g. `export JAVA_HOME=~/jdk25-arm64/Contents/Home`.
 
 ```sh
-cp .env.example .env            # set POSTGRES_PASSWORD
+cp .env.example .env            # set POSTGRES_PASSWORD, INTERNAL_API_KEY and the JWT keys (see comments inside)
 docker compose up --build -d    # build and run everything
 docker compose logs -f
 docker compose down             # keeps data
@@ -81,5 +81,9 @@ mvn -DskipTests package         # host build (JDK 25)
 ```
 
 Run one service from the host against containerised infra: `docker compose up -d wallet-db redis`, then `SPRING_DATASOURCE_PASSWORD=<pw> java -jar services/wallet-service/target/wallet-service-*.jar`.
+
+### Authentication
+
+`auth-service` owns credentials and issues RS256-signed access tokens (15 min) plus rotating refresh tokens (7 days). The gateway verifies tokens with the public key only and forwards the caller's id to services in `X-Authenticated-Customer-Id`. Public endpoints: `POST /api/v1/users`, `POST /api/v1/auth/login|refresh|logout`, and `/actuator/health`; everything else needs `Authorization: Bearer <token>`. Do not publish service ports (8081-8086) outside a trusted network: they trust that header.
 
 `docker compose down -v` deletes all volumes and their data; use it only for an intentional reset.
