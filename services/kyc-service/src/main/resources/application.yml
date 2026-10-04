@@ -1,0 +1,43 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: kyc-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5439/kyc_db}
+    username: ${SPRING_DATASOURCE_USERNAME:flowpay}
+    password: ${SPRING_DATASOURCE_PASSWORD:flowpay}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+flowpay:
+  security:
+    internal-api-key: ${INTERNAL_API_KEY}
+  kyc:
+    # Base64 of 32 random bytes (openssl rand -base64 32). Encrypts ID numbers and keys the duplicate-detection hash.
+    encryption-key: ${KYC_ENCRYPTION_KEY}
+    currency: NGN
+    outbox:
+      poll-interval: 2s
+
+# API documentation (Swagger UI at /swagger-ui.html, spec at /v3/api-docs). Set DOCS_ENABLED=false in production.
+springdoc:
+  api-docs:
+    enabled: ${DOCS_ENABLED:true}
+  swagger-ui:
+    enabled: ${DOCS_ENABLED:true}
