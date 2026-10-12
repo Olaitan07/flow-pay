@@ -3,7 +3,7 @@
   "info": {
     "title": "FlowPay internal service APIs",
     "version": "v1",
-    "description": "Service-to-service endpoints. They are **not** reachable through the gateway: call the services directly\n(auth-service on port 8081, notification-service on port 8086, kyc-service on port 8087) with the `X-Internal-Api-Key` header\n(`INTERNAL_API_KEY` from your `.env`). Intended for development and debugging only.\n"
+    "description": "Service-to-service endpoints. They are **not** reachable through the gateway: call the services directly\n(auth-service on port 8081, notification-service on port 8086, kyc-service on port 8087, wallet-service on port 8083, transaction-service on port 8084) with the `X-Internal-Api-Key` header\n(`INTERNAL_API_KEY` from your `.env`). Intended for development and debugging only.\n"
   },
   "servers": [
     {
@@ -21,8 +21,16 @@
       "description": "Service-to-service only. Not reachable through the gateway; call auth-service directly (port 8081) with the X-Internal-Api-Key header."
     },
     {
+      "name": "Internal: funding",
+      "description": "Not reachable through the gateway. Needs the X-Internal-Api-Key header. Used by the payment provider's callback and by operations staff."
+    },
+    {
       "name": "Internal: notifications",
       "description": "Service-to-service only. Not reachable through the gateway; call notification-service directly (port 8086) with the X-Internal-Api-Key header."
+    },
+    {
+      "name": "Internal: wallets",
+      "description": "Not reachable through the gateway. Needs the X-Internal-Api-Key header. Used by operations staff and by other FlowPay services."
     }
   ],
   "paths": {
@@ -92,6 +100,257 @@
         {
           "url": "http://localhost:8081",
           "description": "auth-service (direct)"
+        }
+      ]
+    },
+    "/internal/funding/{reference}": {
+      "get": {
+        "tags": [
+          "Internal: funding"
+        ],
+        "summary": "Open a funding with its full history",
+        "description": "Shows any funding with provider details, the review reason (if any) and every state change, oldest first. **Internal only.**\n\n### How to test (direct call, development only)\n1. Call with `X-Internal-Api-Key` and a funding reference: **200**.\n2. Unknown reference: **404**. Missing key: **401**.\n",
+        "operationId": "getFundingForOperations",
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The funding and its history.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingDetailResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "FUNDING_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8084",
+          "description": "transaction-service (direct)"
+        }
+      ]
+    },
+    "/internal/funding/{reference}/confirm": {
+      "post": {
+        "tags": [
+          "Internal: funding"
+        ],
+        "summary": "The payment provider reports the payment's result",
+        "description": "How the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+        "operationId": "confirmFunding",
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmFundingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The funding after processing the report (or unchanged, if it was a repeat).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "FUNDING_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "FUNDING_ALREADY_FAILED or FUNDING_STATE_CONFLICT: the report contradicts a final state.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8084",
+          "description": "transaction-service (direct)"
+        }
+      ]
+    },
+    "/internal/funding/{reference}/retry": {
+      "post": {
+        "tags": [
+          "Internal: funding"
+        ],
+        "summary": "Try again to credit a stuck or refused funding",
+        "description": "Tries again to put a confirmed payment into the wallet. **Internal only.** Needs `X-Actor`, which is kept in the audit trail.\n\n### How it works\n* Works on a `PROCESSING` funding, and on a `REQUIRES_REVIEW` one whose reason is `CREDIT_REFUSED` (for example after the wallet is unblocked).\n* It cannot retry an `AMOUNT_MISMATCH` review, or a final (`SUCCESS`/`FAILED`) funding: **422** `FUNDING_NOT_RETRYABLE`.\n* Safe to repeat: the wallet credits a funding's reference only once.\n\n### How to test (direct call, development only)\n1. Block a wallet and confirm a funding for it: `REQUIRES_REVIEW`.\n2. Reactivate the wallet and call retry with `X-Actor: ops.jane`: the funding becomes `SUCCESS` and the wallet holds the money.\n3. Retry a `SUCCESS` funding: **422**. Omit `X-Actor`: **400**.\n",
+        "operationId": "retryFunding",
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Actor",
+            "in": "header",
+            "description": "Who is retrying. Recorded in the audit trail.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "minLength": 0
+            },
+            "example": "ops.jane"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The funding after the retry.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR: missing X-Actor.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "FUNDING_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "FUNDING_NOT_RETRYABLE.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8084",
+          "description": "transaction-service (direct)"
         }
       ]
     },
@@ -562,6 +821,414 @@
           "description": "notification-service (direct)"
         }
       ]
+    },
+    "/internal/wallets/{id}": {
+      "get": {
+        "tags": [
+          "Internal: wallets"
+        ],
+        "summary": "Open a wallet with its status history",
+        "description": "Shows any wallet with every status change, oldest first. **Internal only.**\n\n### How to test (direct call, development only)\n1. Call with `X-Internal-Api-Key` and a wallet id: **200**.\n2. Unknown id: **404**. Missing key: **401**.\n",
+        "operationId": "getWalletForOperations",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The wallet and its history.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletDetailResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALLET_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8083",
+          "description": "wallet-service (direct)"
+        }
+      ]
+    },
+    "/internal/wallets/{id}/credit": {
+      "post": {
+        "tags": [
+          "Internal: wallets"
+        ],
+        "summary": "Put money into a wallet",
+        "description": "Adds money to a wallet. **Internal only.** This is the building block that wallet funding and transfers use; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE` or `FROZEN`, and the currency must match the wallet's.\n* `reference` must be unique. Sending the **same reference with the same details** again returns the original result with **200** and adds nothing; a different movement with a used reference is **409** `REFERENCE_REUSED`.\n* Both the ledger and the available balance go up by the amount.\n\n### How to test (direct call, development only)\n1. Credit `5000.00` NGN with reference `test-1`: **201**, balances `5000.00`.\n2. Repeat exactly: **200**, same body, balance still `5000.00`.\n3. Reuse `test-1` with `6000.00`: **409** `REFERENCE_REUSED`.\n4. Credit a `BLOCKED` or `CLOSED` wallet: **422** `WALLET_NOT_ACCEPTING_FUNDS`. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Amount `0`, negative, or more than 2 decimals: **400**.\n",
+        "operationId": "creditWallet",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MovementRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Money added.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovementResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A repeat of an earlier identical request; nothing was added again.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovementResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALLET_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "REFERENCE_REUSED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "WALLET_NOT_ACCEPTING_FUNDS or CURRENCY_MISMATCH.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8083",
+          "description": "wallet-service (direct)"
+        }
+      ]
+    },
+    "/internal/wallets/{id}/debit": {
+      "post": {
+        "tags": [
+          "Internal: wallets"
+        ],
+        "summary": "Take money out of a wallet",
+        "description": "Removes money from a wallet. **Internal only.** The building block for transfers and withdrawals; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE`, in the same currency, with enough **available** balance. A `FROZEN`, `BLOCKED` or `CLOSED` wallet cannot send money.\n* The balance can never go negative: the check and the change are a single database statement, so two simultaneous debits cannot spend the same money.\n* `reference` works as for credit: a repeat is safe and moves nothing twice.\n\n### How to test (direct call, development only)\n1. Credit `5000.00`, then debit `2000.00` with a new reference: **201**, balances `3000.00`.\n2. Debit `3000.01`: **422** `INSUFFICIENT_FUNDS`, balance unchanged.\n3. Freeze the wallet and debit: **422** `WALLET_NOT_ACTIVE`.\n4. Repeat a debit reference: **200**, balance not reduced again.\n",
+        "operationId": "debitWallet",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MovementRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Money removed.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovementResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A repeat of an earlier identical request; nothing was removed again.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovementResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALLET_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "REFERENCE_REUSED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "WALLET_NOT_ACTIVE, INSUFFICIENT_FUNDS or CURRENCY_MISMATCH.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8083",
+          "description": "wallet-service (direct)"
+        }
+      ]
+    },
+    "/internal/wallets/{id}/status": {
+      "post": {
+        "tags": [
+          "Internal: wallets"
+        ],
+        "summary": "Freeze, block, reactivate or close a wallet",
+        "description": "Moves a wallet to a new status. **Internal only.** Needs `X-Actor` (who is doing this) and a reason; both are kept in the audit trail.\n\n### The status rules\n| Status | Can send money | Can receive money |\n|---|---|---|\n| `ACTIVE` | yes | yes |\n| `FROZEN` | no | yes |\n| `BLOCKED` | no | no |\n| `CLOSED` | no | no (final, cannot be reopened) |\n\nAllowed changes: `ACTIVE`, `FROZEN` and `BLOCKED` can each become either of the other two, and any of them can become `CLOSED`. A `CLOSED` wallet cannot change. **Closing needs a balance of exactly zero**, checked at the moment of closing so a deposit arriving at the same time is never lost.\n\n### How to test (direct call, development only)\n1. Freeze an active wallet with `{\"status\":\"FROZEN\",\"reason\":\"Customer request\"}` and `X-Actor: ops.jane`: **200**, history shows the change.\n2. Debit it (see the debit endpoint): **422** `WALLET_NOT_ACTIVE`. Credit it: allowed.\n3. Set the same status again: **422** `WALLET_STATUS_UNCHANGED`. Change a closed wallet: **422** `INVALID_STATUS_TRANSITION`.\n4. Close a wallet that holds money: **422** `WALLET_NOT_EMPTY`.\n5. Omit `X-Actor` or the reason: **400**.\n",
+        "operationId": "changeWalletStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Actor",
+            "in": "header",
+            "description": "Who is making the change. Recorded in the audit trail.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "minLength": 0
+            },
+            "example": "ops.jane"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The wallet after the change, with its history.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR: missing actor, status or reason.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALLET_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "WALLET_STATUS_CHANGED: someone else changed it at the same moment.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "WALLET_STATUS_UNCHANGED, INVALID_STATUS_TRANSITION or WALLET_NOT_EMPTY.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8083",
+          "description": "wallet-service (direct)"
+        }
+      ]
     }
   },
   "components": {
@@ -673,6 +1340,110 @@
           }
         }
       },
+      "Change": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "PROCESSING",
+              "SUCCESS",
+              "FAILED",
+              "REQUIRES_REVIEW"
+            ]
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "PROCESSING",
+              "SUCCESS",
+              "FAILED",
+              "REQUIRES_REVIEW"
+            ]
+          },
+          "actor": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ChangeStatusRequest": {
+        "type": "object",
+        "description": "Move a wallet to a new status.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "FROZEN",
+              "BLOCKED",
+              "CLOSED"
+            ],
+            "example": "FROZEN"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why. Required and kept in the audit trail.",
+            "example": "Customer reported a lost phone",
+            "maxLength": 500,
+            "minLength": 0
+          }
+        },
+        "required": [
+          "reason",
+          "status"
+        ]
+      },
+      "ConfirmFundingRequest": {
+        "type": "object",
+        "description": "What the payment provider reports about a funding.",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "SUCCESS",
+              "FAILED"
+            ],
+            "example": "SUCCESS"
+          },
+          "providerReference": {
+            "type": "string",
+            "description": "The provider's own reference for this payment.",
+            "example": "PSK_8f3a91c2",
+            "maxLength": 100,
+            "minLength": 0
+          },
+          "amount": {
+            "type": "number",
+            "description": "What the provider actually received. Required when the outcome is SUCCESS; it must equal the requested amount.",
+            "example": 5000.0
+          },
+          "currency": {
+            "type": "string",
+            "description": "Currency the provider received. Required when the outcome is SUCCESS.",
+            "example": "NGN",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "failureReason": {
+            "type": "string",
+            "description": "Why the payment failed. Used when the outcome is FAILED.",
+            "example": "Insufficient funds at the bank",
+            "maxLength": 500,
+            "minLength": 0
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
       "CreateCredentialRequest": {
         "type": "object",
         "description": "Internal: login credentials for a newly registered customer.",
@@ -763,6 +1534,84 @@
           }
         }
       },
+      "FundingDetailResponse": {
+        "type": "object",
+        "description": "A funding with everything operations need: provider details, review reason and full history. Internal only.",
+        "properties": {
+          "reference": {
+            "type": "string"
+          },
+          "customerId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "walletId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amount": {
+            "type": "number",
+            "example": 5000.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "BANK_TRANSFER",
+              "CARD",
+              "EXTERNAL_PROVIDER"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "PROCESSING",
+              "SUCCESS",
+              "FAILED",
+              "REQUIRES_REVIEW"
+            ]
+          },
+          "providerReference": {
+            "type": "string"
+          },
+          "failureReason": {
+            "type": "string"
+          },
+          "reviewCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when status is REQUIRES_REVIEW: AMOUNT_MISMATCH or CREDIT_REFUSED.",
+            "enum": [
+              "AMOUNT_MISMATCH",
+              "CREDIT_REFUSED"
+            ]
+          },
+          "reviewReason": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "history": {
+            "type": "array",
+            "description": "Every state change, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            }
+          }
+        }
+      },
       "HistoryEntry": {
         "type": "object",
         "description": "One line of the audit trail.",
@@ -780,6 +1629,81 @@
             "type": "string"
           },
           "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "MovementRequest": {
+        "type": "object",
+        "description": "Put money into, or take money out of, a wallet.",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "description": "Unique reference for this movement. Sending the same reference again with the same details returns the original result and moves no money a second time.",
+            "example": "fund-2026-10-12-0001",
+            "maxLength": 100,
+            "minLength": 0,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "amount": {
+            "type": "number",
+            "description": "Amount, more than zero, at most 2 decimal places. Money is never a floating-point number.",
+            "example": 5000.0,
+            "minimum": 0.01
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency. Must equal the wallet's currency.",
+            "example": "NGN",
+            "minLength": 1,
+            "pattern": "^[A-Z]{3}$"
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "reference"
+        ]
+      },
+      "MovementResponse": {
+        "type": "object",
+        "description": "The result of a credit or debit.",
+        "properties": {
+          "reference": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CREDIT",
+              "DEBIT"
+            ],
+            "example": "DEBIT"
+          },
+          "amount": {
+            "type": "number",
+            "example": 5000.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          },
+          "ledgerBalanceAfter": {
+            "type": "number",
+            "description": "Ledger balance right after this movement.",
+            "example": 95000.0
+          },
+          "availableBalanceAfter": {
+            "type": "number",
+            "description": "Available balance right after this movement.",
+            "example": 75000.0
+          },
+          "createdAt": {
             "type": "string",
             "format": "date-time"
           }
@@ -1004,6 +1928,99 @@
           "recipient",
           "type"
         ]
+      },
+      "StatusChange": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "FROZEN",
+              "BLOCKED",
+              "CLOSED"
+            ],
+            "example": "ACTIVE"
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "FROZEN",
+              "BLOCKED",
+              "CLOSED"
+            ],
+            "example": "FROZEN"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WalletDetailResponse": {
+        "type": "object",
+        "description": "A wallet with its status history. Internal only.",
+        "properties": {
+          "wallet": {
+            "$ref": "#/components/schemas/WalletResponse"
+          },
+          "statusHistory": {
+            "type": "array",
+            "description": "Every status change, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/StatusChange"
+            }
+          }
+        }
+      },
+      "WalletResponse": {
+        "type": "object",
+        "description": "A wallet and what it holds.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "customerId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          },
+          "ledgerBalance": {
+            "type": "number",
+            "description": "Recorded funds.",
+            "example": 100000.0
+          },
+          "availableBalance": {
+            "type": "number",
+            "description": "What can be spent right now. Never more than the ledger balance.",
+            "example": 80000.0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "FROZEN",
+              "BLOCKED",
+              "CLOSED"
+            ],
+            "example": "ACTIVE"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
       }
     },
     "securitySchemes": {
