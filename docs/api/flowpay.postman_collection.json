@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "FlowPay API",
-    "description": "Runnable collection for the FlowPay API, served through the gateway at {{baseUrl}}.\n\n## How to use\n1. Start the stack: `docker compose up --build -d`.\n2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n4. For folder 7 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n## Good to know\n* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; when running the whole collection, set a delay of about 1500 ms between requests.\n* Each run registers a brand-new customer, so you can run it repeatedly.\n* Emails go to Mailpit (http://localhost:8025), not to real inboxes.\n* Every request's description explains how the endpoint works and how to test it.",
+    "description": "Runnable collection for the FlowPay API, served through the gateway at {{baseUrl}}.\n\n## How to use\n1. Start the stack: `docker compose up --build -d`.\n2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n4. For folders 7 and 9 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n## Good to know\n* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; when running the whole collection, set a delay of about 1500 ms between requests.\n* Each run registers a brand-new customer, so you can run it repeatedly.\n* Emails go to Mailpit (http://localhost:8025), not to real inboxes.\n* Every request's description explains how the endpoint works and how to test it.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -30,6 +30,10 @@
     {
       "key": "notificationServiceUrl",
       "value": "http://localhost:8086"
+    },
+    {
+      "key": "kycServiceUrl",
+      "value": "http://localhost:8087"
     },
     {
       "key": "password",
@@ -2529,6 +2533,964 @@
                 "exec": [
                   "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
                   "pm.test(\"error is INVALID_NOTIFICATION\", () => pm.expect(pm.response.json().error).to.eql(\"INVALID_NOTIFICATION\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8. Identity verification (KYC)",
+      "description": "Check your verification level and submit tier 1. Through the gateway with your bearer token.",
+      "item": [
+        {
+          "name": "Log in (fresh token for this folder)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "**Log in with email and password**\n\nSigns a customer in. **Public.** Limited to 10 attempts per minute per IP address (shared with `login/verify`).\n\n### How it works\n* Correct password, two-step verification **off** -> `200` with `accessToken` (JWT, 15 min) and `refreshToken` (7 days).\n* Correct password, two-step verification **on** -> `200` with `{\"mfaRequired\": true, \"challengeId\": ...}` and **no tokens**. A 6-digit code is emailed; finish with `POST /api/v1/auth/login/verify`.\n* Anything else -> the **same** `401 INVALID_CREDENTIALS` message for a wrong password, an unknown email and a locked account, so the API never reveals whether an account exists.\n* **5 wrong passwords lock the account for 15 minutes** (even the correct password is refused while locked).\n\n### How to test\n1. Register a customer first (`POST /api/v1/users`).\n2. Log in with the right password. Expect **200** and tokens. Copy `accessToken` into the Authorize box.\n3. Log in with a wrong password. Expect **401 INVALID_CREDENTIALS**. Try an unknown email: the response is identical.\n4. Fail 5 times in a row, then use the correct password. Still **401** (locked for 15 minutes; a password reset unlocks it).\n5. Hit it 11 times in a minute. Expect **429**.\n6. To try the two-step response, enable it under \"4. Two-step verification\" and log in again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set(\"accessToken\", body.accessToken);",
+                  "pm.collectionVariables.set(\"refreshToken\", body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "See my verification status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kyc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc"
+              ]
+            },
+            "description": "A new customer is level 0 with nothing started, and may not move money yet.\n\n---\n\n**See my verification status**\n\nShows where each tier stands and what your current level allows. **Requires a bearer token.**\n\n### How it works\n* `level` is the highest tier that is `VERIFIED` (0 if none). It is read live from the database on every call.\n* Each tier is `NOT_STARTED`, `PENDING` (waiting for a reviewer), `REQUIRES_REVIEW` (an extra check is needed), `VERIFIED` or `REJECTED` (with the reviewer's reason).\n* `capabilities` lists the operations your level allows and the largest single transaction.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. Call this endpoint on a new account. Expect **200**, `level: 0`, both tiers `NOT_STARTED`, and no allowed operations.\n3. Submit tier 1, then call it again: tier 1 is `PENDING`.\n4. After a reviewer approves (see the internal review endpoints), `level` becomes 1 and the allowed operations appear.\n5. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"is my status, level 0\", () => { pm.expect(body.customerId).to.eql(pm.collectionVariables.get(\"customerId\")); pm.expect(body.level).to.eql(0); });",
+                  "pm.test(\"both tiers NOT_STARTED\", () => body.tiers.forEach(t => pm.expect(t.status).to.eql(\"NOT_STARTED\")));",
+                  "pm.test(\"no operations allowed\", () => pm.expect(body.capabilities.allowedOperations).to.eql([]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "See my status without a token (expect 401)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kyc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc"
+              ]
+            },
+            "description": "**What this checks:** the gateway refuses requests with no access token.\n\n---\n\n**See my verification status**\n\nShows where each tier stands and what your current level allows. **Requires a bearer token.**\n\n### How it works\n* `level` is the highest tier that is `VERIFIED` (0 if none). It is read live from the database on every call.\n* Each tier is `NOT_STARTED`, `PENDING` (waiting for a reviewer), `REQUIRES_REVIEW` (an extra check is needed), `VERIFIED` or `REJECTED` (with the reviewer's reason).\n* `capabilities` lists the operations your level allows and the largest single transaction.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. Call this endpoint on a new account. Expect **200**, `level: 0`, both tiers `NOT_STARTED`, and no allowed operations.\n3. Submit tier 1, then call it again: tier 1 is `PENDING`.\n4. After a reviewer approves (see the internal review endpoints), `level` becomes 1 and the allowed operations appear.\n5. Without a token: **401**.\n",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit tier 2 before tier 1 (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kyc/tiers/2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc",
+                "tiers",
+                "2"
+              ]
+            },
+            "description": "**What this checks:** tier 2 needs a verified tier 1 first.\n\n---\n\n**Submit tier 2: government ID**\n\nStarts tier 2 verification with a government-issued ID. **Requires a bearer token and a verified tier 1.**\n\n### How it works\n* Tier 1 must already be `VERIFIED`, otherwise `422 KYC_TIER_PREREQUISITE`.\n* **NIN** and **BVN** must be exactly 11 digits. Spaces and dashes in the number are ignored.\n* The ID number is **encrypted** before it is stored and is shown back to you **masked** (`*******8901`). No document images are collected.\n* Saved as `PENDING` for a human reviewer. If the same ID has already been submitted by another customer it is silently marked `REQUIRES_REVIEW` for a closer look (you are not told why).\n* One open submission at a time (`409`), and you cannot resubmit once verified (`409`).\n\n### How to test\n1. Before tier 1 is verified, send the example body. Expect **422 KYC_TIER_PREREQUISITE**.\n2. After tier 1 is approved, send it again. Expect **201** with status `PENDING` and a masked number.\n3. Send `{\"idType\":\"NIN\",\"idNumber\":\"123\"}`. Expect **400** (too short). Send a 10-digit NIN: **400** (must be 11).\n4. Send it again while pending: **409 KYC_ALREADY_SUBMITTED**.\n5. After approval, `level` becomes 2.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idType\": \"NIN\",\n  \"idNumber\": \"12345678901\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is KYC_TIER_PREREQUISITE\", () => pm.expect(pm.response.json().error).to.eql(\"KYC_TIER_PREREQUISITE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit tier 1 as someone under 18 (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kyc/tiers/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc",
+                "tiers",
+                "1"
+              ]
+            },
+            "description": "**Submit tier 1: date of birth and address**\n\nStarts tier 1 verification. **Requires a bearer token.**\n\n### How it works\n* You must be **at least 18** (otherwise `422 KYC_NOT_ELIGIBLE`).\n* The submission is saved as `PENDING` and waits for a human reviewer. Nothing is verified automatically.\n* You can have **one** open tier 1 submission at a time (`409 KYC_ALREADY_SUBMITTED`), and cannot resubmit once verified (`409 KYC_ALREADY_VERIFIED`).\n* If a reviewer **rejects** it you may submit again.\n* When it is approved your level becomes 1 and your account moves from `PENDING_VERIFICATION` to `ACTIVE` (this happens a moment later, through an event).\n\n### How to test\n1. Send the example body. Expect **201** with status `PENDING`.\n2. Send it again. Expect **409 KYC_ALREADY_SUBMITTED**.\n3. Use a date of birth less than 18 years ago on a fresh account. Expect **422 KYC_NOT_ELIGIBLE**.\n4. Send `{}` or a bad country such as `Nigeria`. Expect **400 VALIDATION_ERROR**.\n5. Ask a reviewer to approve it (`POST /internal/kyc/submissions/{id}/decision`), then check `GET /api/v1/kyc` and your profile.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dateOfBirth\": \"2020-01-01\",\n  \"addressLine1\": \"12 Marina Road\",\n  \"city\": \"Lagos\",\n  \"state\": \"Lagos\",\n  \"postalCode\": \"101233\",\n  \"country\": \"NG\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is KYC_NOT_ELIGIBLE\", () => pm.expect(pm.response.json().error).to.eql(\"KYC_NOT_ELIGIBLE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit tier 1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kyc/tiers/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc",
+                "tiers",
+                "1"
+              ]
+            },
+            "description": "Recorded as `PENDING` and waits for a person to review it. The submission id is saved as `submissionId`.\n\n---\n\n**Submit tier 1: date of birth and address**\n\nStarts tier 1 verification. **Requires a bearer token.**\n\n### How it works\n* You must be **at least 18** (otherwise `422 KYC_NOT_ELIGIBLE`).\n* The submission is saved as `PENDING` and waits for a human reviewer. Nothing is verified automatically.\n* You can have **one** open tier 1 submission at a time (`409 KYC_ALREADY_SUBMITTED`), and cannot resubmit once verified (`409 KYC_ALREADY_VERIFIED`).\n* If a reviewer **rejects** it you may submit again.\n* When it is approved your level becomes 1 and your account moves from `PENDING_VERIFICATION` to `ACTIVE` (this happens a moment later, through an event).\n\n### How to test\n1. Send the example body. Expect **201** with status `PENDING`.\n2. Send it again. Expect **409 KYC_ALREADY_SUBMITTED**.\n3. Use a date of birth less than 18 years ago on a fresh account. Expect **422 KYC_NOT_ELIGIBLE**.\n4. Send `{}` or a bad country such as `Nigeria`. Expect **400 VALIDATION_ERROR**.\n5. Ask a reviewer to approve it (`POST /internal/kyc/submissions/{id}/decision`), then check `GET /api/v1/kyc` and your profile.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dateOfBirth\": \"1990-05-14\",\n  \"addressLine1\": \"12 Marina Road\",\n  \"city\": \"Lagos\",\n  \"state\": \"Lagos\",\n  \"postalCode\": \"101233\",\n  \"country\": \"NG\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"recorded as PENDING\", () => pm.expect(body.status).to.eql(\"PENDING\"));",
+                  "pm.collectionVariables.set(\"submissionId\", body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit tier 1 again (expect 409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kyc/tiers/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc",
+                "tiers",
+                "1"
+              ]
+            },
+            "description": "**What this checks:** only one open submission per tier.\n\n---\n\n**Submit tier 1: date of birth and address**\n\nStarts tier 1 verification. **Requires a bearer token.**\n\n### How it works\n* You must be **at least 18** (otherwise `422 KYC_NOT_ELIGIBLE`).\n* The submission is saved as `PENDING` and waits for a human reviewer. Nothing is verified automatically.\n* You can have **one** open tier 1 submission at a time (`409 KYC_ALREADY_SUBMITTED`), and cannot resubmit once verified (`409 KYC_ALREADY_VERIFIED`).\n* If a reviewer **rejects** it you may submit again.\n* When it is approved your level becomes 1 and your account moves from `PENDING_VERIFICATION` to `ACTIVE` (this happens a moment later, through an event).\n\n### How to test\n1. Send the example body. Expect **201** with status `PENDING`.\n2. Send it again. Expect **409 KYC_ALREADY_SUBMITTED**.\n3. Use a date of birth less than 18 years ago on a fresh account. Expect **422 KYC_NOT_ELIGIBLE**.\n4. Send `{}` or a bad country such as `Nigeria`. Expect **400 VALIDATION_ERROR**.\n5. Ask a reviewer to approve it (`POST /internal/kyc/submissions/{id}/decision`), then check `GET /api/v1/kyc` and your profile.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dateOfBirth\": \"1990-05-14\",\n  \"addressLine1\": \"12 Marina Road\",\n  \"city\": \"Lagos\",\n  \"state\": \"Lagos\",\n  \"postalCode\": \"101233\",\n  \"country\": \"NG\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error is KYC_ALREADY_SUBMITTED\", () => pm.expect(pm.response.json().error).to.eql(\"KYC_ALREADY_SUBMITTED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Status while waiting for review",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kyc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc"
+              ]
+            },
+            "description": "Still level 0: a pending tier grants nothing.\n\n---\n\n**See my verification status**\n\nShows where each tier stands and what your current level allows. **Requires a bearer token.**\n\n### How it works\n* `level` is the highest tier that is `VERIFIED` (0 if none). It is read live from the database on every call.\n* Each tier is `NOT_STARTED`, `PENDING` (waiting for a reviewer), `REQUIRES_REVIEW` (an extra check is needed), `VERIFIED` or `REJECTED` (with the reviewer's reason).\n* `capabilities` lists the operations your level allows and the largest single transaction.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. Call this endpoint on a new account. Expect **200**, `level: 0`, both tiers `NOT_STARTED`, and no allowed operations.\n3. Submit tier 1, then call it again: tier 1 is `PENDING`.\n4. After a reviewer approves (see the internal review endpoints), `level` becomes 1 and the allowed operations appear.\n5. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"tier 1 PENDING, level still 0\", () => { pm.expect(body.tiers[0].status).to.eql(\"PENDING\"); pm.expect(body.level).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. KYC review and enforcement (developers only)",
+      "description": "Approve the tier 1 submission as a reviewer, then see how the level changes what is allowed. Calls kyc-service directly; needs `internalApiKey`.",
+      "item": [
+        {
+          "name": "Capabilities at level 0",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/capabilities",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "customers",
+                "{{customerId}}",
+                "capabilities"
+              ]
+            },
+            "description": "**Needs `internalApiKey`.** Calls kyc-service directly on port 8087, not the gateway. Run folder 8 first.\n\n---\n\n**What may this customer do?**\n\nReturns a customer's current verification level and what it allows. **Internal only.**\n\n### How it works\nRead live from the database every time (never from a token or cache), so it cannot be stale. A customer with no verified tier is level 0.\n\n### How to test (direct call, development only)\n1. Call it for a new customer: level 0, no operations.\n2. Approve their tier 1: level 1 allows `FUND_WALLET`, `P2P_TRANSFER` up to 50,000.00 NGN.\n3. Approve tier 2: level 2 also allows `EXTERNAL_TRANSFER`, up to 5,000,000.00 NGN.\n",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"level 0, nothing allowed\", () => { const b = pm.response.json(); pm.expect(b.level).to.eql(0); pm.expect(b.allowedOperations).to.eql([]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capabilities without the key (expect 401)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/capabilities",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "customers",
+                "{{customerId}}",
+                "capabilities"
+              ]
+            },
+            "description": "**What may this customer do?**\n\nReturns a customer's current verification level and what it allows. **Internal only.**\n\n### How it works\nRead live from the database every time (never from a token or cache), so it cannot be stale. A customer with no verified tier is level 0.\n\n### How to test (direct call, development only)\n1. Call it for a new customer: level 0, no operations.\n2. Approve their tier 1: level 1 allows `FUND_WALLET`, `P2P_TRANSFER` up to 50,000.00 NGN.\n3. Approve tier 2: level 2 also allows `EXTERNAL_TRANSFER`, up to 5,000,000.00 NGN.\n",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authorize a transfer at level 0 (expect refused)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/authorize",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "customers",
+                "{{customerId}}",
+                "authorize"
+              ]
+            },
+            "description": "**What this checks:** the enforcement point. Wallet and transfer services call this before moving money, so the rule holds for a direct API call too.\n\n---\n\n**May this customer do this, for this amount?**\n\nThe enforcement point. Wallet and transfer services call this **before** moving money, so the rule holds whether the request came from an app, a browser or a direct API call. **Internal only.**\n\n### How it works\nChecks, in order: the currency is supported (`UNSUPPORTED_CURRENCY`), the customer's level allows the operation (`KYC_LEVEL_TOO_LOW`, with `requiredLevel`), and the amount is within the level's single-transaction cap (`KYC_LIMIT_EXCEEDED`).\nA refusal is a normal `200` with `allowed: false`: the caller must stop and surface the reason. Amounts are decimals with at most 2 places; the currency is always explicit.\n\n### How to test (direct call, development only)\n1. Level 0 customer, `FUND_WALLET` 1000.00 NGN: `allowed: false`, `KYC_LEVEL_TOO_LOW`, `requiredLevel: 1`.\n2. After tier 1: `P2P_TRANSFER` 10000.00 NGN is allowed; 60000.00 is `KYC_LIMIT_EXCEEDED`; `EXTERNAL_TRANSFER` is `KYC_LEVEL_TOO_LOW` (`requiredLevel: 2`).\n3. After tier 2: all three are allowed up to the higher cap.\n4. Currency `USD`: `UNSUPPORTED_CURRENCY`. Amount `-5` or `1.234`: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\": \"P2P_TRANSFER\",\n  \"amount\": \"1000.00\",\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"refused: level too low\", () => { const b = pm.response.json(); pm.expect(b.allowed).to.eql(false); pm.expect(b.reasonCode).to.eql(\"KYC_LEVEL_TOO_LOW\"); pm.expect(b.requiredLevel).to.eql(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List submissions waiting for review",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/submissions",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "submissions"
+              ]
+            },
+            "description": "**List submissions waiting for review**\n\nThe reviewer's work queue, oldest first. **Internal only.**\n\n### How it works\nReturns `PENDING` and `REQUIRES_REVIEW` submissions. ID numbers are **masked** in this list; open one submission to see the full details.\n\n### How to test (direct call, development only)\n1. A customer submits tier 1 or 2 (`POST /api/v1/kyc/tiers/1`).\n2. Call this endpoint with the `X-Internal-Api-Key` header. The submission appears, status `PENDING`.\n3. Submit the same ID number from a second customer: that one appears as `REQUIRES_REVIEW`.\n4. Omit the key: **401**.\n",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"my submission is in the queue\", () => pm.expect(pm.response.json().map(s => s.id)).to.include(pm.collectionVariables.get(\"submissionId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Open the submission as a reviewer",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Reviewer",
+                "value": "reviewer.jane",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/submissions/{{submissionId}}",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "submissions",
+                "{{submissionId}}"
+              ]
+            },
+            "description": "Every open is written to the audit trail with the reviewer's name.\n\n---\n\n**Open a submission (shows the full ID number)**\n\nEverything a reviewer needs to decide, including the **decrypted ID number**. **Internal only.** Requires `X-Reviewer`.\n\n### How it works\nEvery call is written to the audit trail as `SENSITIVE_DATA_VIEWED` with the reviewer's name, so it is always known who looked at an ID number and when.\nThe response includes the submission's full history, oldest first.\n\n### How to test (direct call, development only)\n1. Take an id from the review queue.\n2. Call this endpoint with `X-Internal-Api-Key` and `X-Reviewer: reviewer.jane`. Expect **200** with the full number.\n3. Call it again: the `history` now has two `SENSITIVE_DATA_VIEWED` lines.\n4. Omit `X-Reviewer`: **400**. Unknown id: **404**.\n",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"shows the submission and its history\", () => { const b = pm.response.json(); pm.expect(b.id).to.eql(pm.collectionVariables.get(\"submissionId\")); pm.expect(b.history).to.be.an(\"array\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject without a reason (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Reviewer",
+                "value": "reviewer.jane",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/submissions/{{submissionId}}/decision",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "submissions",
+                "{{submissionId}}",
+                "decision"
+              ]
+            },
+            "description": "**Approve or reject a submission**\n\nRecords the reviewer's decision. **Internal only.** Requires `X-Reviewer`.\n\n### How it works\n* `APPROVE` -> the tier becomes `VERIFIED` and the customer's level rises. An event (`KYC_LEVEL_CHANGED`, ids only) is published to Kafka so other services react; user-service then moves the account from `PENDING_VERIFICATION` to `ACTIVE`.\n* `REJECT` -> `REJECTED`. A **reason is required** and is shown to the customer, who may then submit again.\n* The decision, its audit line and the event are saved in **one transaction**: none can exist without the others.\n* A submission can be decided **once**. If two reviewers act at the same moment exactly one succeeds; the other gets `409 KYC_NOT_REVIEWABLE`.\n\n### How to test (direct call, development only)\n1. Submit tier 1 as a customer, take its id from the queue.\n2. `POST` `{\"decision\":\"APPROVE\"}` with the key and `X-Reviewer`. Expect **200** with `status: VERIFIED` and `customerLevel: 1`.\n3. `GET /api/v1/kyc` as the customer: level is 1. A few seconds later their profile status is `ACTIVE`.\n4. Decide the same submission again: **409 KYC_NOT_REVIEWABLE**.\n5. Reject without a `reason`: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"REJECT\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error is VALIDATION_ERROR\", () => pm.expect(pm.response.json().error).to.eql(\"VALIDATION_ERROR\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve tier 1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Reviewer",
+                "value": "reviewer.jane",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/submissions/{{submissionId}}/decision",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "submissions",
+                "{{submissionId}}",
+                "decision"
+              ]
+            },
+            "description": "**Approve or reject a submission**\n\nRecords the reviewer's decision. **Internal only.** Requires `X-Reviewer`.\n\n### How it works\n* `APPROVE` -> the tier becomes `VERIFIED` and the customer's level rises. An event (`KYC_LEVEL_CHANGED`, ids only) is published to Kafka so other services react; user-service then moves the account from `PENDING_VERIFICATION` to `ACTIVE`.\n* `REJECT` -> `REJECTED`. A **reason is required** and is shown to the customer, who may then submit again.\n* The decision, its audit line and the event are saved in **one transaction**: none can exist without the others.\n* A submission can be decided **once**. If two reviewers act at the same moment exactly one succeeds; the other gets `409 KYC_NOT_REVIEWABLE`.\n\n### How to test (direct call, development only)\n1. Submit tier 1 as a customer, take its id from the queue.\n2. `POST` `{\"decision\":\"APPROVE\"}` with the key and `X-Reviewer`. Expect **200** with `status: VERIFIED` and `customerLevel: 1`.\n3. `GET /api/v1/kyc` as the customer: level is 1. A few seconds later their profile status is `ACTIVE`.\n4. Decide the same submission again: **409 KYC_NOT_REVIEWABLE**.\n5. Reject without a `reason`: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"APPROVE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"verified, customer is level 1\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql(\"VERIFIED\"); pm.expect(b.customerLevel).to.eql(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve the same submission again (expect 409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Reviewer",
+                "value": "reviewer.jane",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/submissions/{{submissionId}}/decision",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "submissions",
+                "{{submissionId}}",
+                "decision"
+              ]
+            },
+            "description": "**What this checks:** a decision cannot be repeated.\n\n---\n\n**Approve or reject a submission**\n\nRecords the reviewer's decision. **Internal only.** Requires `X-Reviewer`.\n\n### How it works\n* `APPROVE` -> the tier becomes `VERIFIED` and the customer's level rises. An event (`KYC_LEVEL_CHANGED`, ids only) is published to Kafka so other services react; user-service then moves the account from `PENDING_VERIFICATION` to `ACTIVE`.\n* `REJECT` -> `REJECTED`. A **reason is required** and is shown to the customer, who may then submit again.\n* The decision, its audit line and the event are saved in **one transaction**: none can exist without the others.\n* A submission can be decided **once**. If two reviewers act at the same moment exactly one succeeds; the other gets `409 KYC_NOT_REVIEWABLE`.\n\n### How to test (direct call, development only)\n1. Submit tier 1 as a customer, take its id from the queue.\n2. `POST` `{\"decision\":\"APPROVE\"}` with the key and `X-Reviewer`. Expect **200** with `status: VERIFIED` and `customerLevel: 1`.\n3. `GET /api/v1/kyc` as the customer: level is 1. A few seconds later their profile status is `ACTIVE`.\n4. Decide the same submission again: **409 KYC_NOT_REVIEWABLE**.\n5. Reject without a `reason`: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"APPROVE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error is KYC_NOT_REVIEWABLE\", () => pm.expect(pm.response.json().error).to.eql(\"KYC_NOT_REVIEWABLE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authorize a transfer at level 1 (expect allowed)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/authorize",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "customers",
+                "{{customerId}}",
+                "authorize"
+              ]
+            },
+            "description": "**May this customer do this, for this amount?**\n\nThe enforcement point. Wallet and transfer services call this **before** moving money, so the rule holds whether the request came from an app, a browser or a direct API call. **Internal only.**\n\n### How it works\nChecks, in order: the currency is supported (`UNSUPPORTED_CURRENCY`), the customer's level allows the operation (`KYC_LEVEL_TOO_LOW`, with `requiredLevel`), and the amount is within the level's single-transaction cap (`KYC_LIMIT_EXCEEDED`).\nA refusal is a normal `200` with `allowed: false`: the caller must stop and surface the reason. Amounts are decimals with at most 2 places; the currency is always explicit.\n\n### How to test (direct call, development only)\n1. Level 0 customer, `FUND_WALLET` 1000.00 NGN: `allowed: false`, `KYC_LEVEL_TOO_LOW`, `requiredLevel: 1`.\n2. After tier 1: `P2P_TRANSFER` 10000.00 NGN is allowed; 60000.00 is `KYC_LIMIT_EXCEEDED`; `EXTERNAL_TRANSFER` is `KYC_LEVEL_TOO_LOW` (`requiredLevel: 2`).\n3. After tier 2: all three are allowed up to the higher cap.\n4. Currency `USD`: `UNSUPPORTED_CURRENCY`. Amount `-5` or `1.234`: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\": \"P2P_TRANSFER\",\n  \"amount\": \"1000.00\",\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"allowed\", () => pm.expect(pm.response.json().allowed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authorize an external transfer at level 1 (expect refused)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/authorize",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "customers",
+                "{{customerId}}",
+                "authorize"
+              ]
+            },
+            "description": "**What this checks:** external transfers need level 2.\n\n---\n\n**May this customer do this, for this amount?**\n\nThe enforcement point. Wallet and transfer services call this **before** moving money, so the rule holds whether the request came from an app, a browser or a direct API call. **Internal only.**\n\n### How it works\nChecks, in order: the currency is supported (`UNSUPPORTED_CURRENCY`), the customer's level allows the operation (`KYC_LEVEL_TOO_LOW`, with `requiredLevel`), and the amount is within the level's single-transaction cap (`KYC_LIMIT_EXCEEDED`).\nA refusal is a normal `200` with `allowed: false`: the caller must stop and surface the reason. Amounts are decimals with at most 2 places; the currency is always explicit.\n\n### How to test (direct call, development only)\n1. Level 0 customer, `FUND_WALLET` 1000.00 NGN: `allowed: false`, `KYC_LEVEL_TOO_LOW`, `requiredLevel: 1`.\n2. After tier 1: `P2P_TRANSFER` 10000.00 NGN is allowed; 60000.00 is `KYC_LIMIT_EXCEEDED`; `EXTERNAL_TRANSFER` is `KYC_LEVEL_TOO_LOW` (`requiredLevel: 2`).\n3. After tier 2: all three are allowed up to the higher cap.\n4. Currency `USD`: `UNSUPPORTED_CURRENCY`. Amount `-5` or `1.234`: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\": \"EXTERNAL_TRANSFER\",\n  \"amount\": \"1000.00\",\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"refused: needs level 2\", () => { const b = pm.response.json(); pm.expect(b.allowed).to.eql(false); pm.expect(b.requiredLevel).to.eql(2); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authorize above the level 1 limit (expect refused)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/authorize",
+              "host": [
+                "{{kycServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "kyc",
+                "customers",
+                "{{customerId}}",
+                "authorize"
+              ]
+            },
+            "description": "**What this checks:** level 1 is capped at 50,000.00 NGN per transaction.\n\n---\n\n**May this customer do this, for this amount?**\n\nThe enforcement point. Wallet and transfer services call this **before** moving money, so the rule holds whether the request came from an app, a browser or a direct API call. **Internal only.**\n\n### How it works\nChecks, in order: the currency is supported (`UNSUPPORTED_CURRENCY`), the customer's level allows the operation (`KYC_LEVEL_TOO_LOW`, with `requiredLevel`), and the amount is within the level's single-transaction cap (`KYC_LIMIT_EXCEEDED`).\nA refusal is a normal `200` with `allowed: false`: the caller must stop and surface the reason. Amounts are decimals with at most 2 places; the currency is always explicit.\n\n### How to test (direct call, development only)\n1. Level 0 customer, `FUND_WALLET` 1000.00 NGN: `allowed: false`, `KYC_LEVEL_TOO_LOW`, `requiredLevel: 1`.\n2. After tier 1: `P2P_TRANSFER` 10000.00 NGN is allowed; 60000.00 is `KYC_LIMIT_EXCEEDED`; `EXTERNAL_TRANSFER` is `KYC_LEVEL_TOO_LOW` (`requiredLevel: 2`).\n3. After tier 2: all three are allowed up to the higher cap.\n4. Currency `USD`: `UNSUPPORTED_CURRENCY`. Amount `-5` or `1.234`: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"operation\": \"P2P_TRANSFER\",\n  \"amount\": \"50000.01\",\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"refused: over the limit\", () => { const b = pm.response.json(); pm.expect(b.allowed).to.eql(false); pm.expect(b.reasonCode).to.eql(\"KYC_LIMIT_EXCEEDED\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My status now shows level 1 (through the gateway)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/kyc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "kyc"
+              ]
+            },
+            "description": "**See my verification status**\n\nShows where each tier stands and what your current level allows. **Requires a bearer token.**\n\n### How it works\n* `level` is the highest tier that is `VERIFIED` (0 if none). It is read live from the database on every call.\n* Each tier is `NOT_STARTED`, `PENDING` (waiting for a reviewer), `REQUIRES_REVIEW` (an extra check is needed), `VERIFIED` or `REJECTED` (with the reviewer's reason).\n* `capabilities` lists the operations your level allows and the largest single transaction.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. Call this endpoint on a new account. Expect **200**, `level: 0`, both tiers `NOT_STARTED`, and no allowed operations.\n3. Submit tier 1, then call it again: tier 1 is `PENDING`.\n4. After a reviewer approves (see the internal review endpoints), `level` becomes 1 and the allowed operations appear.\n5. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"level 1, tier 1 VERIFIED\", () => { const b = pm.response.json(); pm.expect(b.level).to.eql(1); pm.expect(b.tiers[0].status).to.eql(\"VERIFIED\"); });"
                 ]
               }
             }

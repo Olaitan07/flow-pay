@@ -3,7 +3,7 @@
   "info": {
     "title": "FlowPay API",
     "version": "v1",
-    "description": "FlowPay is a digital wallet platform. This is the **public API**, reached through the gateway at\n`http://localhost:8080`.\n\n## Quick start\n1. **Register** - `POST /api/v1/users`\n2. **Log in** - `POST /api/v1/auth/login` -> copy the `accessToken`\n3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.\n4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`\n\n## How security works\n* Only registration, login, refresh, logout, password reset and the health check are public.\n* Everything else needs `Authorization: Bearer <accessToken>`. Tokens are JWTs signed with RS256 and last 15 minutes;\n  renew them with `POST /api/v1/auth/refresh` (refresh tokens are single use).\n* You only ever see and change **your own** data. Another customer's id returns `404`.\n* Several endpoints are rate limited per IP address and return `429` with a `Retry-After` header when exceeded.\n* Every error has the same shape: `{timestamp, status, error, message, path}`. Branch on `error`, not `message`.\n\n## Emails in development\nPassword reset and two-step verification send real emails to a local inbox (Mailpit): http://localhost:8025.\n"
+    "description": "FlowPay is a digital wallet platform. This is the **public API**, reached through the gateway at\n`http://localhost:8080`.\n\n## Quick start\n1. **Register** - `POST /api/v1/users`\n2. **Log in** - `POST /api/v1/auth/login` -> copy the `accessToken`\n3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.\n4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`\n5. **Verify your identity** - `GET /api/v1/kyc`, then `POST /api/v1/kyc/tiers/1` and `/tiers/2`. Your verification level decides what you may do with money.\n\n## How security works\n* Only registration, login, refresh, logout, password reset and the health check are public.\n* Everything else needs `Authorization: Bearer <accessToken>`. Tokens are JWTs signed with RS256 and last 15 minutes;\n  renew them with `POST /api/v1/auth/refresh` (refresh tokens are single use).\n* You only ever see and change **your own** data. Another customer's id returns `404`.\n* Several endpoints are rate limited per IP address and return `429` with a `Retry-After` header when exceeded.\n* Every error has the same shape: `{timestamp, status, error, message, path}`. Branch on `error`, not `message`.\n\n## Emails in development\nPassword reset and two-step verification send real emails to a local inbox (Mailpit): http://localhost:8025.\n"
   },
   "servers": [
     {
@@ -27,6 +27,10 @@
     {
       "name": "4. Two-step verification",
       "description": "Optional extra security: after the password, a 6-digit code is emailed. All three calls need a bearer token."
+    },
+    {
+      "name": "5. Identity verification (KYC)",
+      "description": "Verify your identity to unlock more of FlowPay. Three levels: 0 (just registered), 1 (date of birth + address), 2 (government ID). All calls need a bearer token and only ever touch your own data."
     }
   ],
   "paths": {
@@ -542,6 +546,197 @@
         }
       }
     },
+    "/api/v1/kyc": {
+      "get": {
+        "tags": [
+          "5. Identity verification (KYC)"
+        ],
+        "summary": "See my verification status",
+        "description": "Shows where each tier stands and what your current level allows. **Requires a bearer token.**\n\n### How it works\n* `level` is the highest tier that is `VERIFIED` (0 if none). It is read live from the database on every call.\n* Each tier is `NOT_STARTED`, `PENDING` (waiting for a reviewer), `REQUIRES_REVIEW` (an extra check is needed), `VERIFIED` or `REJECTED` (with the reviewer's reason).\n* `capabilities` lists the operations your level allows and the largest single transaction.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. Call this endpoint on a new account. Expect **200**, `level: 0`, both tiers `NOT_STARTED`, and no allowed operations.\n3. Submit tier 1, then call it again: tier 1 is `PENDING`.\n4. After a reviewer approves (see the internal review endpoints), `level` becomes 1 and the allowed operations appear.\n5. Without a token: **401**.\n",
+        "operationId": "getKycStatus",
+        "responses": {
+          "200": {
+            "description": "Your verification status.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/kyc/tiers/1": {
+      "post": {
+        "tags": [
+          "5. Identity verification (KYC)"
+        ],
+        "summary": "Submit tier 1: date of birth and address",
+        "description": "Starts tier 1 verification. **Requires a bearer token.**\n\n### How it works\n* You must be **at least 18** (otherwise `422 KYC_NOT_ELIGIBLE`).\n* The submission is saved as `PENDING` and waits for a human reviewer. Nothing is verified automatically.\n* You can have **one** open tier 1 submission at a time (`409 KYC_ALREADY_SUBMITTED`), and cannot resubmit once verified (`409 KYC_ALREADY_VERIFIED`).\n* If a reviewer **rejects** it you may submit again.\n* When it is approved your level becomes 1 and your account moves from `PENDING_VERIFICATION` to `ACTIVE` (this happens a moment later, through an event).\n\n### How to test\n1. Send the example body. Expect **201** with status `PENDING`.\n2. Send it again. Expect **409 KYC_ALREADY_SUBMITTED**.\n3. Use a date of birth less than 18 years ago on a fresh account. Expect **422 KYC_NOT_ELIGIBLE**.\n4. Send `{}` or a bad country such as `Nigeria`. Expect **400 VALIDATION_ERROR**.\n5. Ask a reviewer to approve it (`POST /internal/kyc/submissions/{id}/decision`), then check `GET /api/v1/kyc` and your profile.\n",
+        "operationId": "submitTierOne",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitTierOneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Submitted and waiting for review.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR or MALFORMED_REQUEST.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "KYC_ALREADY_SUBMITTED or KYC_ALREADY_VERIFIED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "KYC_NOT_ELIGIBLE: under 18.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/kyc/tiers/2": {
+      "post": {
+        "tags": [
+          "5. Identity verification (KYC)"
+        ],
+        "summary": "Submit tier 2: government ID",
+        "description": "Starts tier 2 verification with a government-issued ID. **Requires a bearer token and a verified tier 1.**\n\n### How it works\n* Tier 1 must already be `VERIFIED`, otherwise `422 KYC_TIER_PREREQUISITE`.\n* **NIN** and **BVN** must be exactly 11 digits. Spaces and dashes in the number are ignored.\n* The ID number is **encrypted** before it is stored and is shown back to you **masked** (`*******8901`). No document images are collected.\n* Saved as `PENDING` for a human reviewer. If the same ID has already been submitted by another customer it is silently marked `REQUIRES_REVIEW` for a closer look (you are not told why).\n* One open submission at a time (`409`), and you cannot resubmit once verified (`409`).\n\n### How to test\n1. Before tier 1 is verified, send the example body. Expect **422 KYC_TIER_PREREQUISITE**.\n2. After tier 1 is approved, send it again. Expect **201** with status `PENDING` and a masked number.\n3. Send `{\"idType\":\"NIN\",\"idNumber\":\"123\"}`. Expect **400** (too short). Send a 10-digit NIN: **400** (must be 11).\n4. Send it again while pending: **409 KYC_ALREADY_SUBMITTED**.\n5. After approval, `level` becomes 2.\n",
+        "operationId": "submitTierTwo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitTierTwoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Submitted and waiting for review.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR or MALFORMED_REQUEST.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "KYC_ALREADY_SUBMITTED or KYC_ALREADY_VERIFIED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "KYC_TIER_PREREQUISITE: verify tier 1 first.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/users": {
       "post": {
         "tags": [
@@ -785,6 +980,43 @@
   },
   "components": {
     "schemas": {
+      "CapabilitiesResponse": {
+        "type": "object",
+        "description": "What a verification level allows.",
+        "properties": {
+          "level": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0 = registered only, 1 = basic, 2 = full.",
+            "example": 1
+          },
+          "allowedOperations": {
+            "type": "array",
+            "description": "Operations this level may perform.",
+            "example": [
+              "FUND_WALLET",
+              "P2P_TRANSFER"
+            ],
+            "items": {
+              "type": "string",
+              "enum": [
+                "FUND_WALLET",
+                "P2P_TRANSFER",
+                "EXTERNAL_TRANSFER"
+              ]
+            }
+          },
+          "maxSingleTransactionAmount": {
+            "type": "number",
+            "description": "Largest single transaction this level may make.",
+            "example": 50000.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          }
+        }
+      },
       "CustomerProfileResponse": {
         "type": "object",
         "description": "A customer's profile. Never includes any password data.",
@@ -962,6 +1194,32 @@
           }
         }
       },
+      "KycStatusResponse": {
+        "type": "object",
+        "description": "Your verification status, per tier, and what your current level allows.",
+        "properties": {
+          "customerId": {
+            "type": "string",
+            "format": "uuid",
+            "example": "6fbf8203-6ee0-4b39-aa85-d721d712480c"
+          },
+          "level": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Highest tier that is VERIFIED (0 if none).",
+            "example": 1
+          },
+          "tiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TierStatusResponse"
+            }
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/CapabilitiesResponse"
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "description": "Credentials used to sign in.",
@@ -1136,6 +1394,179 @@
           "password",
           "phoneNumber"
         ]
+      },
+      "SubmissionResponse": {
+        "type": "object",
+        "description": "A verification request you submitted.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "0b7c2c62-3f2e-4e0a-9d3e-1f6a2f3d9a11"
+          },
+          "tier": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 or 2.",
+            "example": 1
+          },
+          "status": {
+            "type": "string",
+            "description": "Awaiting review shows as PENDING (or REQUIRES_REVIEW for extra checks).",
+            "enum": [
+              "NOT_STARTED",
+              "PENDING",
+              "REQUIRES_REVIEW",
+              "VERIFIED",
+              "REJECTED"
+            ],
+            "example": "PENDING"
+          },
+          "submittedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-04T10:15:30.000Z"
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Null until a reviewer decides."
+          },
+          "rejectionReason": {
+            "type": "string",
+            "description": "Why it was rejected. Only present when status is REJECTED."
+          },
+          "maskedIdNumber": {
+            "type": "string",
+            "description": "Tier 2 only: your ID number with all but the last 4 characters hidden.",
+            "example": "*******8901"
+          }
+        }
+      },
+      "SubmitTierOneRequest": {
+        "type": "object",
+        "description": "Tier 1 verification: date of birth and residential address.",
+        "properties": {
+          "dateOfBirth": {
+            "type": "string",
+            "format": "date",
+            "description": "Date of birth (yyyy-MM-dd). You must be at least 18.",
+            "example": "1994-05-17"
+          },
+          "addressLine1": {
+            "type": "string",
+            "example": "12 Marina Road",
+            "maxLength": 150,
+            "minLength": 0
+          },
+          "addressLine2": {
+            "type": "string",
+            "example": "Apt 4B",
+            "maxLength": 150,
+            "minLength": 0
+          },
+          "city": {
+            "type": "string",
+            "example": "Lagos",
+            "maxLength": 100,
+            "minLength": 0
+          },
+          "state": {
+            "type": "string",
+            "example": "Lagos",
+            "maxLength": 100,
+            "minLength": 0
+          },
+          "postalCode": {
+            "type": "string",
+            "example": "101233",
+            "maxLength": 20,
+            "minLength": 0
+          },
+          "country": {
+            "type": "string",
+            "description": "Country of residence, ISO 3166-1 alpha-2.",
+            "example": "NG",
+            "minLength": 1,
+            "pattern": "^[A-Z]{2}$"
+          }
+        },
+        "required": [
+          "addressLine1",
+          "city",
+          "country",
+          "dateOfBirth",
+          "postalCode",
+          "state"
+        ]
+      },
+      "SubmitTierTwoRequest": {
+        "type": "object",
+        "description": "Tier 2 verification: a government-issued ID. Requires tier 1 to be verified first.",
+        "properties": {
+          "idType": {
+            "type": "string",
+            "description": "Kind of ID. NIN and BVN must be exactly 11 digits.",
+            "enum": [
+              "NIN",
+              "BVN",
+              "PASSPORT",
+              "DRIVERS_LICENSE",
+              "NATIONAL_ID"
+            ],
+            "example": "NIN"
+          },
+          "idNumber": {
+            "type": "string",
+            "description": "The ID number. Spaces and dashes are ignored. Stored encrypted and shown masked.",
+            "example": "12345678901",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9 -]{6,25}$"
+          }
+        },
+        "required": [
+          "idNumber",
+          "idType"
+        ]
+      },
+      "TierStatusResponse": {
+        "type": "object",
+        "description": "Where one tier stands. NOT_STARTED if you have not submitted it.",
+        "properties": {
+          "tier": {
+            "type": "integer",
+            "format": "int32",
+            "example": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "NOT_STARTED",
+              "PENDING",
+              "REQUIRES_REVIEW",
+              "VERIFIED",
+              "REJECTED"
+            ],
+            "example": "VERIFIED"
+          },
+          "submissionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Your latest submission for this tier, if any."
+          },
+          "submittedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "rejectionReason": {
+            "type": "string",
+            "description": "Only present when status is REJECTED."
+          }
+        }
       },
       "TokenResponse": {
         "type": "object",
