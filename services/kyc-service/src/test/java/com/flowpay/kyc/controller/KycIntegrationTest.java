@@ -311,7 +311,7 @@ class KycIntegrationTest extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.idType").value("NIN"));
         internal(get("/internal/kyc/submissions/" + id), "reviewer.omar").andExpect(status().isOk())
                 .andExpect(jsonPath("$.history[?(@.type == 'SENSITIVE_DATA_VIEWED')].actor")
-                        .value(org.hamcrest.Matchers.contains("reviewer.jane")));
+                        .value(org.hamcrest.Matchers.containsInAnyOrder("reviewer.jane", "reviewer.omar")));
         assertThat(count("select count(*) from kyc_decisions where type = 'SENSITIVE_DATA_VIEWED'")).isEqualTo(2);
     }
 
@@ -379,7 +379,7 @@ class KycIntegrationTest extends AbstractIntegrationTest {
 
     List<ConsumerRecord<String, String>> eventsFor(UUID customer, int atLeast) {
         Properties props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBrokersAsString());
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());

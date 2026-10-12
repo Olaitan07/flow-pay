@@ -2,18 +2,21 @@ package com.flowpay.kyc;
 
 import java.security.SecureRandom;
 import java.util.Base64;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
+import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
-/** One Postgres and one Kafka broker are started once and shared by every integration test class. */
+/** One Postgres container and one embedded Kafka broker are started once and shared by every integration test class. */
 @SpringBootTest(properties = {"flowpay.security.internal-api-key=test-internal-key",
         "flowpay.kyc.outbox.poll-interval=200ms"})
 @AutoConfigureMockMvc
+@EmbeddedKafka(partitions = 1, topics = "kyc.events", bootstrapServersProperty = "spring.kafka.bootstrap-servers")
 public abstract class AbstractIntegrationTest {
 
     protected static final String INTERNAL_API_KEY = "test-internal-key";
@@ -21,12 +24,11 @@ public abstract class AbstractIntegrationTest {
     @ServiceConnection
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17");
 
-    @ServiceConnection
-    protected static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:3.9.0");
+    @Autowired
+    protected EmbeddedKafkaBroker kafka;
 
     static {
         POSTGRES.start();
-        KAFKA.start();
     }
 
     @DynamicPropertySource

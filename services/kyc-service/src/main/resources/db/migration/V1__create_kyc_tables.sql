@@ -2,7 +2,7 @@
 CREATE TABLE kyc_submissions (
     id                  UUID         PRIMARY KEY,
     customer_id         UUID         NOT NULL,
-    tier                SMALLINT     NOT NULL,
+    tier                INTEGER      NOT NULL,
     status              VARCHAR(20)  NOT NULL,
     -- tier 1
     date_of_birth       DATE,
