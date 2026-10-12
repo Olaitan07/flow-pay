@@ -3,7 +3,7 @@
   "info": {
     "title": "FlowPay API",
     "version": "v1",
-    "description": "FlowPay is a digital wallet platform. This is the **public API**, reached through the gateway at\n`http://localhost:8080`.\n\n## Quick start\n1. **Register** - `POST /api/v1/users`\n2. **Log in** - `POST /api/v1/auth/login` -> copy the `accessToken`\n3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.\n4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`\n5. **Verify your identity** - `GET /api/v1/kyc`, then `POST /api/v1/kyc/tiers/1` and `/tiers/2`. Your verification level decides what you may do with money.\n\n## How security works\n* Only registration, login, refresh, logout, password reset and the health check are public.\n* Everything else needs `Authorization: Bearer <accessToken>`. Tokens are JWTs signed with RS256 and last 15 minutes;\n  renew them with `POST /api/v1/auth/refresh` (refresh tokens are single use).\n* You only ever see and change **your own** data. Another customer's id returns `404`.\n* Several endpoints are rate limited per IP address and return `429` with a `Retry-After` header when exceeded.\n* Every error has the same shape: `{timestamp, status, error, message, path}`. Branch on `error`, not `message`.\n\n## Emails in development\nPassword reset and two-step verification send real emails to a local inbox (Mailpit): http://localhost:8025.\n"
+    "description": "FlowPay is a digital wallet platform. This is the **public API**, reached through the gateway at\n`http://localhost:8080`.\n\n## Quick start\n1. **Register** - `POST /api/v1/users`\n2. **Log in** - `POST /api/v1/auth/login` -> copy the `accessToken`\n3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.\n4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`\n5. **Verify your identity** - `GET /api/v1/kyc`, then `POST /api/v1/kyc/tiers/1` and `/tiers/2`. Your verification level decides what you may do with money.\n6. **Open a wallet** - `POST /api/v1/wallets` (needs KYC level 1), then `GET /api/v1/wallets` to see your balances.\n\n## How security works\n* Only registration, login, refresh, logout, password reset and the health check are public.\n* Everything else needs `Authorization: Bearer <accessToken>`. Tokens are JWTs signed with RS256 and last 15 minutes;\n  renew them with `POST /api/v1/auth/refresh` (refresh tokens are single use).\n* You only ever see and change **your own** data. Another customer's id returns `404`.\n* Several endpoints are rate limited per IP address and return `429` with a `Retry-After` header when exceeded.\n* Every error has the same shape: `{timestamp, status, error, message, path}`. Branch on `error`, not `message`.\n\n## Emails in development\nPassword reset and two-step verification send real emails to a local inbox (Mailpit): http://localhost:8025.\n"
   },
   "servers": [
     {
@@ -31,6 +31,10 @@
     {
       "name": "5. Identity verification (KYC)",
       "description": "Verify your identity to unlock more of FlowPay. Three levels: 0 (just registered), 1 (date of birth + address), 2 (government ID). All calls need a bearer token and only ever touch your own data."
+    },
+    {
+      "name": "6. Wallets",
+      "description": "Hold your money in a wallet. You need a verified identity (KYC level 1) to open one. All calls need a bearer token and only ever touch your own wallets."
     }
   ],
   "paths": {
@@ -976,6 +980,199 @@
           }
         ]
       }
+    },
+    "/api/v1/wallets": {
+      "get": {
+        "tags": [
+          "6. Wallets"
+        ],
+        "summary": "List my wallets",
+        "description": "Every wallet you own, oldest first, including closed ones. **Requires a bearer token.**\n\n### How to test\n1. Open a wallet, then call this: it appears in the list.\n2. A new account with no wallet gets an empty list.\n3. Without a token: **401**.\n",
+        "operationId": "listMyWallets",
+        "responses": {
+          "200": {
+            "description": "Your wallets (possibly none).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WalletResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "6. Wallets"
+        ],
+        "summary": "Open a wallet",
+        "description": "Opens an empty, `ACTIVE` wallet in one currency. **Requires a bearer token.**\n\n### How it works\n* Only supported currencies are accepted (currently `NGN`). Anything else is refused.\n* You must be verified to **level 1** or higher. This is checked live against the KYC service every time, never from the token.\n* One live wallet per currency. A closed wallet does not stop you opening a new one.\n* A new wallet has `ledgerBalance` and `availableBalance` of `0.00`. The available balance can never exceed the ledger balance and can never go below zero.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. While still level 0, call this with `{\"currency\":\"NGN\"}`: **403** `KYC_LEVEL_TOO_LOW`.\n3. Get verified to level 1 (see the KYC folder), then call again: **201** with a `Location` header and an `ACTIVE` wallet.\n4. Call it again: **409** `WALLET_ALREADY_EXISTS`.\n5. Try `{\"currency\":\"USD\"}`: **422** `UNSUPPORTED_CURRENCY`. Try `{\"currency\":\"ngn\"}` or `{}`: **400** `VALIDATION_ERROR`.\n6. Without a token: **401**.\n",
+        "operationId": "createWallet",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWalletRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new wallet.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR: the currency is missing or malformed.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "KYC_LEVEL_TOO_LOW: verify your identity first.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "WALLET_ALREADY_EXISTS in this currency.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "UNSUPPORTED_CURRENCY.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "KYC_UNAVAILABLE: verification status could not be checked; nothing was created.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/wallets/{id}": {
+      "get": {
+        "tags": [
+          "6. Wallets"
+        ],
+        "summary": "View one of my wallets",
+        "description": "Shows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n",
+        "operationId": "viewWallet",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The wallet.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALLET_NOT_FOUND (or it belongs to someone else).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -1016,6 +1213,22 @@
             "example": "NGN"
           }
         }
+      },
+      "CreateWalletRequest": {
+        "type": "object",
+        "description": "Open a wallet in one currency.",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency code. Always explicit; never assumed. Only supported currencies are accepted.",
+            "example": "NGN",
+            "minLength": 1,
+            "pattern": "^[A-Z]{3}$"
+          }
+        },
+        "required": [
+          "currency"
+        ]
       },
       "CustomerProfileResponse": {
         "type": "object",
@@ -1688,6 +1901,48 @@
           "challengeId",
           "code"
         ]
+      },
+      "WalletResponse": {
+        "type": "object",
+        "description": "A wallet and what it holds.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "customerId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          },
+          "ledgerBalance": {
+            "type": "number",
+            "description": "Recorded funds.",
+            "example": 100000.0
+          },
+          "availableBalance": {
+            "type": "number",
+            "description": "What can be spent right now. Never more than the ledger balance.",
+            "example": 80000.0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "FROZEN",
+              "BLOCKED",
+              "CLOSED"
+            ],
+            "example": "ACTIVE"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
       }
     },
     "securitySchemes": {

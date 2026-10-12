@@ -11,7 +11,7 @@ documentation always comes from the annotations in the code, then writes:
   services/api-gateway/src/main/resources/static/openapi/*.json   served by the gateway's Swagger UI
 
 Usage: python3 scripts/build-api-docs.py
-Override service URLs with USER_URL, AUTH_URL, NOTIFICATION_URL, KYC_URL if you changed the ports.
+Override service URLs with USER_URL, AUTH_URL, NOTIFICATION_URL, KYC_URL, WALLET_URL if you changed the ports.
 """
 import json
 import os
@@ -27,6 +27,7 @@ USER_URL = os.environ.get("USER_URL", "http://localhost:8082")
 AUTH_URL = os.environ.get("AUTH_URL", "http://localhost:8081")
 NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "http://localhost:8086")
 KYC_URL = os.environ.get("KYC_URL", "http://localhost:8087")
+WALLET_URL = os.environ.get("WALLET_URL", "http://localhost:8083")
 GATEWAY_URL = "http://localhost:8080"
 
 
@@ -54,6 +55,7 @@ FlowPay is a digital wallet platform. This is the **public API**, reached throug
 3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.
 4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`
 5. **Verify your identity** - `GET /api/v1/kyc`, then `POST /api/v1/kyc/tiers/1` and `/tiers/2`. Your verification level decides what you may do with money.
+6. **Open a wallet** - `POST /api/v1/wallets` (needs KYC level 1), then `GET /api/v1/wallets` to see your balances.
 
 ## How security works
 * Only registration, login, refresh, logout, password reset and the health check are public.
@@ -69,17 +71,18 @@ Password reset and two-step verification send real emails to a local inbox (Mail
 
 INTERNAL_OVERVIEW = """\
 Service-to-service endpoints. They are **not** reachable through the gateway: call the services directly
-(auth-service on port 8081, notification-service on port 8086, kyc-service on port 8087) with the `X-Internal-Api-Key` header
+(auth-service on port 8081, notification-service on port 8086, kyc-service on port 8087, wallet-service on port 8083) with the `X-Internal-Api-Key` header
 (`INTERNAL_API_KEY` from your `.env`). Intended for development and debugging only.
 """
 
 
-def merge_specs(user, auth, notification, kyc):
+def merge_specs(user, auth, notification, kyc, wallet):
     public_paths, internal_paths = {}, {}
     schemas, tags = {}, {}
 
     for name, spec, base in (("user", user, USER_URL), ("auth", auth, AUTH_URL),
-                             ("notification", notification, NOTIFICATION_URL), ("kyc", kyc, KYC_URL)):
+                             ("notification", notification, NOTIFICATION_URL), ("kyc", kyc, KYC_URL),
+                             ("wallet", wallet, WALLET_URL)):
         for path, item in spec["paths"].items():
             if path.startswith("/internal"):
                 item = dict(item)
@@ -485,6 +488,91 @@ def build_requests():
         tests=js(STATUS(200, "OK"), 'pm.test("refused: over the limit", () => { const b = pm.response.json(); pm.expect(b.allowed).to.eql(false); pm.expect(b.reasonCode).to.eql("KYC_LIMIT_EXCEEDED"); });')))
     R.append(request(F9, "My status now shows level 1 (through the gateway)", "getKycStatus",
         tests=js(STATUS(200, "OK"), 'pm.test("level 1, tier 1 VERIFIED", () => { const b = pm.response.json(); pm.expect(b.level).to.eql(1); pm.expect(b.tiers[0].status).to.eql("VERIFIED"); });')))
+    F10 = "10. Wallets"
+    R.append(request(F10, "Open a wallet", "createWallet", body={"currency": "NGN"},
+        note="Needs KYC level 1: run folders 8 and 9 first (they verify this customer). The wallet id is saved as `walletId`.",
+        tests=js(STATUS(201, "Created"), "const body = pm.response.json();",
+                 'pm.test("ACTIVE with zero balances", () => { pm.expect(body.status).to.eql("ACTIVE"); pm.expect(body.ledgerBalance).to.eql(0); pm.expect(body.availableBalance).to.eql(0); pm.expect(body.currency).to.eql("NGN"); });',
+                 'pm.test("belongs to me", () => pm.expect(body.customerId).to.eql(pm.collectionVariables.get("customerId")));',
+                 'pm.test("Location points at the new wallet", () => pm.expect(pm.response.headers.get("Location")).to.include(body.id));',
+                 SAVE("walletId", "body.id"))))
+    R.append(request(F10, "Open a second NGN wallet (expect 409)", "createWallet", body={"currency": "NGN"},
+        note="**What this checks:** one live wallet per currency.",
+        tests=js(STATUS(409, "Conflict"), 'pm.test("error is WALLET_ALREADY_EXISTS", () => pm.expect(pm.response.json().error).to.eql("WALLET_ALREADY_EXISTS"));')))
+    R.append(request(F10, "Open a USD wallet (expect 422)", "createWallet", body={"currency": "USD"},
+        note="**What this checks:** unsupported currencies are refused (only NGN is enabled).",
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is UNSUPPORTED_CURRENCY", () => pm.expect(pm.response.json().error).to.eql("UNSUPPORTED_CURRENCY"));')))
+    R.append(request(F10, "Open a wallet with a malformed currency (expect 400)", "createWallet", body={"currency": "ngn"},
+        tests=js(STATUS(400, "Bad Request"), 'pm.test("error is VALIDATION_ERROR", () => pm.expect(pm.response.json().error).to.eql("VALIDATION_ERROR"));')))
+    R.append(request(F10, "Open a wallet without a token (expect 401)", "createWallet", body={"currency": "NGN"}, auth="none",
+        tests=js(STATUS(401, "Unauthorized"))))
+    R.append(request(F10, "List my wallets", "listMyWallets",
+        tests=js(STATUS(200, "OK"), 'pm.test("my wallet is listed", () => pm.expect(pm.response.json().map(w => w.id)).to.include(pm.collectionVariables.get("walletId")));')))
+    R.append(request(F10, "View my wallet", "viewWallet", url="{{baseUrl}}/api/v1/wallets/{{walletId}}",
+        tests=js(STATUS(200, "OK"), 'pm.test("is my wallet", () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get("walletId")));')))
+    R.append(request(F10, "View someone else's wallet (expect 404)", "viewWallet",
+        url="{{baseUrl}}/api/v1/wallets/00000000-0000-0000-0000-000000000001",
+        note="**What this checks:** you cannot read another customer's wallet, and the answer does not reveal whether it exists.",
+        tests=js(STATUS(404, "Not Found"), 'pm.test("error is WALLET_NOT_FOUND", () => pm.expect(pm.response.json().error).to.eql("WALLET_NOT_FOUND"));')))
+
+    F11 = "11. Wallet rules (developers only)"
+    key = [("X-Internal-Api-Key", "{{internalApiKey}}")]
+    ops = key + [("X-Actor", "ops.jane")]
+    W = "{{walletServiceUrl}}/internal/wallets/{{walletId}}"
+    R.append(request(F11, "Put 5,000.00 into the wallet", "creditWallet", url=W + "/credit", auth="none", headers=key,
+        body={"reference": "{{fundRef}}", "amount": 5000.00, "currency": "NGN"},
+        note="**Needs `internalApiKey`.** Calls wallet-service directly on port 8083. Run folder 10 first. Every movement has a unique `reference`.",
+        pre=js('pm.collectionVariables.set("fundRef", "fund-" + Date.now());'),
+        tests=js(STATUS(201, "Created"), 'pm.test("balance is 5000.00", () => { const b = pm.response.json(); pm.expect(b.ledgerBalanceAfter).to.eql(5000); pm.expect(b.availableBalanceAfter).to.eql(5000); });')))
+    R.append(request(F11, "Send the same request again (expect 200, nothing added)", "creditWallet", url=W + "/credit", auth="none", headers=key,
+        body={"reference": "{{fundRef}}", "amount": 5000.00, "currency": "NGN"},
+        note="**What this checks:** a retry with the same reference returns the original result and moves no money twice.",
+        tests=js(STATUS(200, "OK"), 'pm.test("balance is still 5000.00", () => pm.expect(pm.response.json().ledgerBalanceAfter).to.eql(5000));')))
+    R.append(request(F11, "Reuse the reference for a different amount (expect 409)", "creditWallet", url=W + "/credit", auth="none", headers=key,
+        body={"reference": "{{fundRef}}", "amount": 6000.00, "currency": "NGN"},
+        tests=js(STATUS(409, "Conflict"), 'pm.test("error is REFERENCE_REUSED", () => pm.expect(pm.response.json().error).to.eql("REFERENCE_REUSED"));')))
+    R.append(request(F11, "Spend 2,000.00", "debitWallet", url=W + "/debit", auth="none", headers=key,
+        body={"reference": "send-{{fundRef}}", "amount": 2000.00, "currency": "NGN"},
+        tests=js(STATUS(201, "Created"), 'pm.test("balance is 3000.00", () => pm.expect(pm.response.json().availableBalanceAfter).to.eql(3000));')))
+    R.append(request(F11, "Spend more than is available (expect 422)", "debitWallet", url=W + "/debit", auth="none", headers=key,
+        body={"reference": "toomuch-{{fundRef}}", "amount": 999999.00, "currency": "NGN"},
+        note="**What this checks:** a wallet can never go below zero.",
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is INSUFFICIENT_FUNDS", () => pm.expect(pm.response.json().error).to.eql("INSUFFICIENT_FUNDS"));')))
+    R.append(request(F11, "Spend in the wrong currency (expect 422)", "debitWallet", url=W + "/debit", auth="none", headers=key,
+        body={"reference": "usd-{{fundRef}}", "amount": 1.00, "currency": "USD"},
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is CURRENCY_MISMATCH", () => pm.expect(pm.response.json().error).to.eql("CURRENCY_MISMATCH"));')))
+    R.append(request(F11, "Freeze the wallet", "changeWalletStatus", url=W + "/status", auth="none", headers=ops,
+        body={"status": "FROZEN", "reason": "Postman test"},
+        note="A frozen wallet cannot send money but can still receive it.",
+        tests=js(STATUS(200, "OK"), 'pm.test("now FROZEN", () => pm.expect(pm.response.json().wallet.status).to.eql("FROZEN"));')))
+    R.append(request(F11, "Spend from the frozen wallet (expect 422)", "debitWallet", url=W + "/debit", auth="none", headers=key,
+        body={"reference": "frozen-{{fundRef}}", "amount": 10.00, "currency": "NGN"},
+        note="**What this checks:** the wallet-status rule for outgoing money.",
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is WALLET_NOT_ACTIVE", () => pm.expect(pm.response.json().error).to.eql("WALLET_NOT_ACTIVE"));')))
+    R.append(request(F11, "Receive 500.00 into the frozen wallet", "creditWallet", url=W + "/credit", auth="none", headers=key,
+        body={"reference": "frozen-in-{{fundRef}}", "amount": 500.00, "currency": "NGN"},
+        tests=js(STATUS(201, "Created"), 'pm.test("balance is 3500.00", () => pm.expect(pm.response.json().ledgerBalanceAfter).to.eql(3500));')))
+    R.append(request(F11, "Block the wallet", "changeWalletStatus", url=W + "/status", auth="none", headers=ops,
+        body={"status": "BLOCKED", "reason": "Postman test"},
+        tests=js(STATUS(200, "OK"), 'pm.test("now BLOCKED", () => pm.expect(pm.response.json().wallet.status).to.eql("BLOCKED"));')))
+    R.append(request(F11, "Send money to the blocked wallet (expect 422)", "creditWallet", url=W + "/credit", auth="none", headers=key,
+        body={"reference": "blocked-{{fundRef}}", "amount": 10.00, "currency": "NGN"},
+        note="**What this checks:** a blocked wallet can neither send nor receive.",
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is WALLET_NOT_ACCEPTING_FUNDS", () => pm.expect(pm.response.json().error).to.eql("WALLET_NOT_ACCEPTING_FUNDS"));')))
+    R.append(request(F11, "Close a wallet that holds money (expect 422)", "changeWalletStatus", url=W + "/status", auth="none", headers=ops,
+        body={"status": "CLOSED", "reason": "Postman test"},
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is WALLET_NOT_EMPTY", () => pm.expect(pm.response.json().error).to.eql("WALLET_NOT_EMPTY"));')))
+    R.append(request(F11, "Change status without saying who (expect 400)", "changeWalletStatus", url=W + "/status", auth="none", headers=key,
+        body={"status": "ACTIVE", "reason": "Postman test"},
+        tests=js(STATUS(400, "Bad Request"))))
+    R.append(request(F11, "Reactivate the wallet", "changeWalletStatus", url=W + "/status", auth="none", headers=ops,
+        body={"status": "ACTIVE", "reason": "Postman test"},
+        tests=js(STATUS(200, "OK"), 'pm.test("ACTIVE again, with the full history", () => { const b = pm.response.json(); pm.expect(b.wallet.status).to.eql("ACTIVE"); pm.expect(b.statusHistory.length).to.eql(3); pm.expect(b.statusHistory[0].actor).to.eql("ops.jane"); });')))
+    R.append(request(F11, "Change status without the key (expect 401)", "changeWalletStatus", url=W + "/status", auth="none",
+        body={"status": "FROZEN", "reason": "Postman test"}, headers=[("X-Actor", "ops.jane")],
+        tests=js(STATUS(401, "Unauthorized"))))
+    R.append(request(F11, "My wallet now shows 3,500.00 (through the gateway)", "viewWallet", url="{{baseUrl}}/api/v1/wallets/{{walletId}}",
+        tests=js(STATUS(200, "OK"), 'pm.test("ACTIVE, 3500.00 ledger and available", () => { const b = pm.response.json(); pm.expect(b.status).to.eql("ACTIVE"); pm.expect(b.ledgerBalance).to.eql(3500); pm.expect(b.availableBalance).to.eql(3500); });')))
     return R
 
 
@@ -532,6 +620,8 @@ def build_collection(ops):
         "7. Internal APIs (developers only)": "Service-to-service endpoints called directly on their own ports. Needs `internalApiKey` (INTERNAL_API_KEY from .env).",
         "8. Identity verification (KYC)": "Check your verification level and submit tier 1. Through the gateway with your bearer token.",
         "9. KYC review and enforcement (developers only)": "Approve the tier 1 submission as a reviewer, then see how the level changes what is allowed. Calls kyc-service directly; needs `internalApiKey`.",
+        "10. Wallets": "Open a wallet once verified, list and view your wallets. Run after folders 8 and 9 (they verify this customer).",
+        "11. Wallet rules (developers only)": "Put money in and take it out, retries, overspending, and the freeze / block / close rules. Calls wallet-service directly; needs `internalApiKey`.",
     }
     collection = {
         "info": {
@@ -542,7 +632,7 @@ def build_collection(ops):
                            "2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n"
                            "3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. "
                            "Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n"
-                           "4. For folders 7 and 9 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n"
+                           "4. For folders 7, 9 and 11 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n"
                            "## Good to know\n"
                            "* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; "
                            "when running the whole collection, set a delay of about 1500 ms between requests.\n"
@@ -558,6 +648,7 @@ def build_collection(ops):
             {"key": "authServiceUrl", "value": "http://localhost:8081"},
             {"key": "notificationServiceUrl", "value": "http://localhost:8086"},
             {"key": "kycServiceUrl", "value": "http://localhost:8087"},
+            {"key": "walletServiceUrl", "value": "http://localhost:8083"},
             {"key": "password", "value": "Sup3rSecret"},
             {"key": "newPassword", "value": "Brand9NewPass"},
         ],
@@ -576,6 +667,7 @@ def build_environment():
             {"key": "authServiceUrl", "value": "http://localhost:8081", "type": "default", "enabled": True},
             {"key": "notificationServiceUrl", "value": "http://localhost:8086", "type": "default", "enabled": True},
             {"key": "kycServiceUrl", "value": "http://localhost:8087", "type": "default", "enabled": True},
+            {"key": "walletServiceUrl", "value": "http://localhost:8083", "type": "default", "enabled": True},
             {"key": "internalApiKey", "value": "", "type": "secret", "enabled": True},
         ],
         "_postman_variable_scope": "environment",
@@ -583,8 +675,9 @@ def build_environment():
 
 
 def main():
-    user, auth, notification, kyc = fetch(USER_URL), fetch(AUTH_URL), fetch(NOTIFICATION_URL), fetch(KYC_URL)
-    public, internal = merge_specs(user, auth, notification, kyc)
+    user, auth, notification, kyc, wallet = (fetch(USER_URL), fetch(AUTH_URL), fetch(NOTIFICATION_URL), fetch(KYC_URL),
+                                             fetch(WALLET_URL))
+    public, internal = merge_specs(user, auth, notification, kyc, wallet)
     ops = operations(public, internal)
 
     dump(os.path.join(DOCS, "flowpay-openapi.json"), public)

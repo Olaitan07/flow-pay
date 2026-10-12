@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "FlowPay API",
-    "description": "Runnable collection for the FlowPay API, served through the gateway at {{baseUrl}}.\n\n## How to use\n1. Start the stack: `docker compose up --build -d`.\n2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n4. For folders 7 and 9 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n## Good to know\n* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; when running the whole collection, set a delay of about 1500 ms between requests.\n* Each run registers a brand-new customer, so you can run it repeatedly.\n* Emails go to Mailpit (http://localhost:8025), not to real inboxes.\n* Every request's description explains how the endpoint works and how to test it.",
+    "description": "Runnable collection for the FlowPay API, served through the gateway at {{baseUrl}}.\n\n## How to use\n1. Start the stack: `docker compose up --build -d`.\n2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n4. For folders 7, 9 and 11 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n## Good to know\n* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; when running the whole collection, set a delay of about 1500 ms between requests.\n* Each run registers a brand-new customer, so you can run it repeatedly.\n* Emails go to Mailpit (http://localhost:8025), not to real inboxes.\n* Every request's description explains how the endpoint works and how to test it.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -34,6 +34,10 @@
     {
       "key": "kycServiceUrl",
       "value": "http://localhost:8087"
+    },
+    {
+      "key": "walletServiceUrl",
+      "value": "http://localhost:8083"
     },
     {
       "key": "password",
@@ -3491,6 +3495,1233 @@
                 "exec": [
                   "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
                   "pm.test(\"level 1, tier 1 VERIFIED\", () => { const b = pm.response.json(); pm.expect(b.level).to.eql(1); pm.expect(b.tiers[0].status).to.eql(\"VERIFIED\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. Wallets",
+      "description": "Open a wallet once verified, list and view your wallets. Run after folders 8 and 9 (they verify this customer).",
+      "item": [
+        {
+          "name": "Open a wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets"
+              ]
+            },
+            "description": "Needs KYC level 1: run folders 8 and 9 first (they verify this customer). The wallet id is saved as `walletId`.\n\n---\n\n**Open a wallet**\n\nOpens an empty, `ACTIVE` wallet in one currency. **Requires a bearer token.**\n\n### How it works\n* Only supported currencies are accepted (currently `NGN`). Anything else is refused.\n* You must be verified to **level 1** or higher. This is checked live against the KYC service every time, never from the token.\n* One live wallet per currency. A closed wallet does not stop you opening a new one.\n* A new wallet has `ledgerBalance` and `availableBalance` of `0.00`. The available balance can never exceed the ledger balance and can never go below zero.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. While still level 0, call this with `{\"currency\":\"NGN\"}`: **403** `KYC_LEVEL_TOO_LOW`.\n3. Get verified to level 1 (see the KYC folder), then call again: **201** with a `Location` header and an `ACTIVE` wallet.\n4. Call it again: **409** `WALLET_ALREADY_EXISTS`.\n5. Try `{\"currency\":\"USD\"}`: **422** `UNSUPPORTED_CURRENCY`. Try `{\"currency\":\"ngn\"}` or `{}`: **400** `VALIDATION_ERROR`.\n6. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"ACTIVE with zero balances\", () => { pm.expect(body.status).to.eql(\"ACTIVE\"); pm.expect(body.ledgerBalance).to.eql(0); pm.expect(body.availableBalance).to.eql(0); pm.expect(body.currency).to.eql(\"NGN\"); });",
+                  "pm.test(\"belongs to me\", () => pm.expect(body.customerId).to.eql(pm.collectionVariables.get(\"customerId\")));",
+                  "pm.test(\"Location points at the new wallet\", () => pm.expect(pm.response.headers.get(\"Location\")).to.include(body.id));",
+                  "pm.collectionVariables.set(\"walletId\", body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Open a second NGN wallet (expect 409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets"
+              ]
+            },
+            "description": "**What this checks:** one live wallet per currency.\n\n---\n\n**Open a wallet**\n\nOpens an empty, `ACTIVE` wallet in one currency. **Requires a bearer token.**\n\n### How it works\n* Only supported currencies are accepted (currently `NGN`). Anything else is refused.\n* You must be verified to **level 1** or higher. This is checked live against the KYC service every time, never from the token.\n* One live wallet per currency. A closed wallet does not stop you opening a new one.\n* A new wallet has `ledgerBalance` and `availableBalance` of `0.00`. The available balance can never exceed the ledger balance and can never go below zero.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. While still level 0, call this with `{\"currency\":\"NGN\"}`: **403** `KYC_LEVEL_TOO_LOW`.\n3. Get verified to level 1 (see the KYC folder), then call again: **201** with a `Location` header and an `ACTIVE` wallet.\n4. Call it again: **409** `WALLET_ALREADY_EXISTS`.\n5. Try `{\"currency\":\"USD\"}`: **422** `UNSUPPORTED_CURRENCY`. Try `{\"currency\":\"ngn\"}` or `{}`: **400** `VALIDATION_ERROR`.\n6. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error is WALLET_ALREADY_EXISTS\", () => pm.expect(pm.response.json().error).to.eql(\"WALLET_ALREADY_EXISTS\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Open a USD wallet (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets"
+              ]
+            },
+            "description": "**What this checks:** unsupported currencies are refused (only NGN is enabled).\n\n---\n\n**Open a wallet**\n\nOpens an empty, `ACTIVE` wallet in one currency. **Requires a bearer token.**\n\n### How it works\n* Only supported currencies are accepted (currently `NGN`). Anything else is refused.\n* You must be verified to **level 1** or higher. This is checked live against the KYC service every time, never from the token.\n* One live wallet per currency. A closed wallet does not stop you opening a new one.\n* A new wallet has `ledgerBalance` and `availableBalance` of `0.00`. The available balance can never exceed the ledger balance and can never go below zero.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. While still level 0, call this with `{\"currency\":\"NGN\"}`: **403** `KYC_LEVEL_TOO_LOW`.\n3. Get verified to level 1 (see the KYC folder), then call again: **201** with a `Location` header and an `ACTIVE` wallet.\n4. Call it again: **409** `WALLET_ALREADY_EXISTS`.\n5. Try `{\"currency\":\"USD\"}`: **422** `UNSUPPORTED_CURRENCY`. Try `{\"currency\":\"ngn\"}` or `{}`: **400** `VALIDATION_ERROR`.\n6. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is UNSUPPORTED_CURRENCY\", () => pm.expect(pm.response.json().error).to.eql(\"UNSUPPORTED_CURRENCY\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Open a wallet with a malformed currency (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets"
+              ]
+            },
+            "description": "**Open a wallet**\n\nOpens an empty, `ACTIVE` wallet in one currency. **Requires a bearer token.**\n\n### How it works\n* Only supported currencies are accepted (currently `NGN`). Anything else is refused.\n* You must be verified to **level 1** or higher. This is checked live against the KYC service every time, never from the token.\n* One live wallet per currency. A closed wallet does not stop you opening a new one.\n* A new wallet has `ledgerBalance` and `availableBalance` of `0.00`. The available balance can never exceed the ledger balance and can never go below zero.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. While still level 0, call this with `{\"currency\":\"NGN\"}`: **403** `KYC_LEVEL_TOO_LOW`.\n3. Get verified to level 1 (see the KYC folder), then call again: **201** with a `Location` header and an `ACTIVE` wallet.\n4. Call it again: **409** `WALLET_ALREADY_EXISTS`.\n5. Try `{\"currency\":\"USD\"}`: **422** `UNSUPPORTED_CURRENCY`. Try `{\"currency\":\"ngn\"}` or `{}`: **400** `VALIDATION_ERROR`.\n6. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currency\": \"ngn\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error is VALIDATION_ERROR\", () => pm.expect(pm.response.json().error).to.eql(\"VALIDATION_ERROR\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Open a wallet without a token (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets"
+              ]
+            },
+            "description": "**Open a wallet**\n\nOpens an empty, `ACTIVE` wallet in one currency. **Requires a bearer token.**\n\n### How it works\n* Only supported currencies are accepted (currently `NGN`). Anything else is refused.\n* You must be verified to **level 1** or higher. This is checked live against the KYC service every time, never from the token.\n* One live wallet per currency. A closed wallet does not stop you opening a new one.\n* A new wallet has `ledgerBalance` and `availableBalance` of `0.00`. The available balance can never exceed the ledger balance and can never go below zero.\n\n### How to test\n1. Log in and authorize with your `accessToken`.\n2. While still level 0, call this with `{\"currency\":\"NGN\"}`: **403** `KYC_LEVEL_TOO_LOW`.\n3. Get verified to level 1 (see the KYC folder), then call again: **201** with a `Location` header and an `ACTIVE` wallet.\n4. Call it again: **409** `WALLET_ALREADY_EXISTS`.\n5. Try `{\"currency\":\"USD\"}`: **422** `UNSUPPORTED_CURRENCY`. Try `{\"currency\":\"ngn\"}` or `{}`: **400** `VALIDATION_ERROR`.\n6. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List my wallets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets"
+              ]
+            },
+            "description": "**List my wallets**\n\nEvery wallet you own, oldest first, including closed ones. **Requires a bearer token.**\n\n### How to test\n1. Open a wallet, then call this: it appears in the list.\n2. A new account with no wallet gets an empty list.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"my wallet is listed\", () => pm.expect(pm.response.json().map(w => w.id)).to.include(pm.collectionVariables.get(\"walletId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "View my wallet",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "**View one of my wallets**\n\nShows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"is my wallet\", () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"walletId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "View someone else's wallet (expect 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets/00000000-0000-0000-0000-000000000001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            },
+            "description": "**What this checks:** you cannot read another customer's wallet, and the answer does not reveal whether it exists.\n\n---\n\n**View one of my wallets**\n\nShows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 Not Found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"error is WALLET_NOT_FOUND\", () => pm.expect(pm.response.json().error).to.eql(\"WALLET_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "11. Wallet rules (developers only)",
+      "description": "Put money in and take it out, retries, overspending, and the freeze / block / close rules. Calls wallet-service directly; needs `internalApiKey`.",
+      "item": [
+        {
+          "name": "Put 5,000.00 into the wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/credit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "credit"
+              ]
+            },
+            "description": "**Needs `internalApiKey`.** Calls wallet-service directly on port 8083. Run folder 10 first. Every movement has a unique `reference`.\n\n---\n\n**Put money into a wallet**\n\nAdds money to a wallet. **Internal only.** This is the building block that wallet funding and transfers use; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE` or `FROZEN`, and the currency must match the wallet's.\n* `reference` must be unique. Sending the **same reference with the same details** again returns the original result with **200** and adds nothing; a different movement with a used reference is **409** `REFERENCE_REUSED`.\n* Both the ledger and the available balance go up by the amount.\n\n### How to test (direct call, development only)\n1. Credit `5000.00` NGN with reference `test-1`: **201**, balances `5000.00`.\n2. Repeat exactly: **200**, same body, balance still `5000.00`.\n3. Reuse `test-1` with `6000.00`: **409** `REFERENCE_REUSED`.\n4. Credit a `BLOCKED` or `CLOSED` wallet: **422** `WALLET_NOT_ACCEPTING_FUNDS`. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Amount `0`, negative, or more than 2 decimals: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{fundRef}}\",\n  \"amount\": 5000.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"fundRef\", \"fund-\" + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"balance is 5000.00\", () => { const b = pm.response.json(); pm.expect(b.ledgerBalanceAfter).to.eql(5000); pm.expect(b.availableBalanceAfter).to.eql(5000); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send the same request again (expect 200, nothing added)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/credit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "credit"
+              ]
+            },
+            "description": "**What this checks:** a retry with the same reference returns the original result and moves no money twice.\n\n---\n\n**Put money into a wallet**\n\nAdds money to a wallet. **Internal only.** This is the building block that wallet funding and transfers use; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE` or `FROZEN`, and the currency must match the wallet's.\n* `reference` must be unique. Sending the **same reference with the same details** again returns the original result with **200** and adds nothing; a different movement with a used reference is **409** `REFERENCE_REUSED`.\n* Both the ledger and the available balance go up by the amount.\n\n### How to test (direct call, development only)\n1. Credit `5000.00` NGN with reference `test-1`: **201**, balances `5000.00`.\n2. Repeat exactly: **200**, same body, balance still `5000.00`.\n3. Reuse `test-1` with `6000.00`: **409** `REFERENCE_REUSED`.\n4. Credit a `BLOCKED` or `CLOSED` wallet: **422** `WALLET_NOT_ACCEPTING_FUNDS`. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Amount `0`, negative, or more than 2 decimals: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{fundRef}}\",\n  \"amount\": 5000.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"balance is still 5000.00\", () => pm.expect(pm.response.json().ledgerBalanceAfter).to.eql(5000));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reuse the reference for a different amount (expect 409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/credit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "credit"
+              ]
+            },
+            "description": "**Put money into a wallet**\n\nAdds money to a wallet. **Internal only.** This is the building block that wallet funding and transfers use; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE` or `FROZEN`, and the currency must match the wallet's.\n* `reference` must be unique. Sending the **same reference with the same details** again returns the original result with **200** and adds nothing; a different movement with a used reference is **409** `REFERENCE_REUSED`.\n* Both the ledger and the available balance go up by the amount.\n\n### How to test (direct call, development only)\n1. Credit `5000.00` NGN with reference `test-1`: **201**, balances `5000.00`.\n2. Repeat exactly: **200**, same body, balance still `5000.00`.\n3. Reuse `test-1` with `6000.00`: **409** `REFERENCE_REUSED`.\n4. Credit a `BLOCKED` or `CLOSED` wallet: **422** `WALLET_NOT_ACCEPTING_FUNDS`. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Amount `0`, negative, or more than 2 decimals: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{fundRef}}\",\n  \"amount\": 6000.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error is REFERENCE_REUSED\", () => pm.expect(pm.response.json().error).to.eql(\"REFERENCE_REUSED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Spend 2,000.00",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/debit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "debit"
+              ]
+            },
+            "description": "**Take money out of a wallet**\n\nRemoves money from a wallet. **Internal only.** The building block for transfers and withdrawals; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE`, in the same currency, with enough **available** balance. A `FROZEN`, `BLOCKED` or `CLOSED` wallet cannot send money.\n* The balance can never go negative: the check and the change are a single database statement, so two simultaneous debits cannot spend the same money.\n* `reference` works as for credit: a repeat is safe and moves nothing twice.\n\n### How to test (direct call, development only)\n1. Credit `5000.00`, then debit `2000.00` with a new reference: **201**, balances `3000.00`.\n2. Debit `3000.01`: **422** `INSUFFICIENT_FUNDS`, balance unchanged.\n3. Freeze the wallet and debit: **422** `WALLET_NOT_ACTIVE`.\n4. Repeat a debit reference: **200**, balance not reduced again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"send-{{fundRef}}\",\n  \"amount\": 2000.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"balance is 3000.00\", () => pm.expect(pm.response.json().availableBalanceAfter).to.eql(3000));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Spend more than is available (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/debit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "debit"
+              ]
+            },
+            "description": "**What this checks:** a wallet can never go below zero.\n\n---\n\n**Take money out of a wallet**\n\nRemoves money from a wallet. **Internal only.** The building block for transfers and withdrawals; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE`, in the same currency, with enough **available** balance. A `FROZEN`, `BLOCKED` or `CLOSED` wallet cannot send money.\n* The balance can never go negative: the check and the change are a single database statement, so two simultaneous debits cannot spend the same money.\n* `reference` works as for credit: a repeat is safe and moves nothing twice.\n\n### How to test (direct call, development only)\n1. Credit `5000.00`, then debit `2000.00` with a new reference: **201**, balances `3000.00`.\n2. Debit `3000.01`: **422** `INSUFFICIENT_FUNDS`, balance unchanged.\n3. Freeze the wallet and debit: **422** `WALLET_NOT_ACTIVE`.\n4. Repeat a debit reference: **200**, balance not reduced again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"toomuch-{{fundRef}}\",\n  \"amount\": 999999.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is INSUFFICIENT_FUNDS\", () => pm.expect(pm.response.json().error).to.eql(\"INSUFFICIENT_FUNDS\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Spend in the wrong currency (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/debit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "debit"
+              ]
+            },
+            "description": "**Take money out of a wallet**\n\nRemoves money from a wallet. **Internal only.** The building block for transfers and withdrawals; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE`, in the same currency, with enough **available** balance. A `FROZEN`, `BLOCKED` or `CLOSED` wallet cannot send money.\n* The balance can never go negative: the check and the change are a single database statement, so two simultaneous debits cannot spend the same money.\n* `reference` works as for credit: a repeat is safe and moves nothing twice.\n\n### How to test (direct call, development only)\n1. Credit `5000.00`, then debit `2000.00` with a new reference: **201**, balances `3000.00`.\n2. Debit `3000.01`: **422** `INSUFFICIENT_FUNDS`, balance unchanged.\n3. Freeze the wallet and debit: **422** `WALLET_NOT_ACTIVE`.\n4. Repeat a debit reference: **200**, balance not reduced again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"usd-{{fundRef}}\",\n  \"amount\": 1.0,\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is CURRENCY_MISMATCH\", () => pm.expect(pm.response.json().error).to.eql(\"CURRENCY_MISMATCH\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Freeze the wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Actor",
+                "value": "ops.jane",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/status",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "status"
+              ]
+            },
+            "description": "A frozen wallet cannot send money but can still receive it.\n\n---\n\n**Freeze, block, reactivate or close a wallet**\n\nMoves a wallet to a new status. **Internal only.** Needs `X-Actor` (who is doing this) and a reason; both are kept in the audit trail.\n\n### The status rules\n| Status | Can send money | Can receive money |\n|---|---|---|\n| `ACTIVE` | yes | yes |\n| `FROZEN` | no | yes |\n| `BLOCKED` | no | no |\n| `CLOSED` | no | no (final, cannot be reopened) |\n\nAllowed changes: `ACTIVE`, `FROZEN` and `BLOCKED` can each become either of the other two, and any of them can become `CLOSED`. A `CLOSED` wallet cannot change. **Closing needs a balance of exactly zero**, checked at the moment of closing so a deposit arriving at the same time is never lost.\n\n### How to test (direct call, development only)\n1. Freeze an active wallet with `{\"status\":\"FROZEN\",\"reason\":\"Customer request\"}` and `X-Actor: ops.jane`: **200**, history shows the change.\n2. Debit it (see the debit endpoint): **422** `WALLET_NOT_ACTIVE`. Credit it: allowed.\n3. Set the same status again: **422** `WALLET_STATUS_UNCHANGED`. Change a closed wallet: **422** `INVALID_STATUS_TRANSITION`.\n4. Close a wallet that holds money: **422** `WALLET_NOT_EMPTY`.\n5. Omit `X-Actor` or the reason: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"FROZEN\",\n  \"reason\": \"Postman test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"now FROZEN\", () => pm.expect(pm.response.json().wallet.status).to.eql(\"FROZEN\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Spend from the frozen wallet (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/debit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "debit"
+              ]
+            },
+            "description": "**What this checks:** the wallet-status rule for outgoing money.\n\n---\n\n**Take money out of a wallet**\n\nRemoves money from a wallet. **Internal only.** The building block for transfers and withdrawals; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE`, in the same currency, with enough **available** balance. A `FROZEN`, `BLOCKED` or `CLOSED` wallet cannot send money.\n* The balance can never go negative: the check and the change are a single database statement, so two simultaneous debits cannot spend the same money.\n* `reference` works as for credit: a repeat is safe and moves nothing twice.\n\n### How to test (direct call, development only)\n1. Credit `5000.00`, then debit `2000.00` with a new reference: **201**, balances `3000.00`.\n2. Debit `3000.01`: **422** `INSUFFICIENT_FUNDS`, balance unchanged.\n3. Freeze the wallet and debit: **422** `WALLET_NOT_ACTIVE`.\n4. Repeat a debit reference: **200**, balance not reduced again.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"frozen-{{fundRef}}\",\n  \"amount\": 10.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is WALLET_NOT_ACTIVE\", () => pm.expect(pm.response.json().error).to.eql(\"WALLET_NOT_ACTIVE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Receive 500.00 into the frozen wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/credit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "credit"
+              ]
+            },
+            "description": "**Put money into a wallet**\n\nAdds money to a wallet. **Internal only.** This is the building block that wallet funding and transfers use; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE` or `FROZEN`, and the currency must match the wallet's.\n* `reference` must be unique. Sending the **same reference with the same details** again returns the original result with **200** and adds nothing; a different movement with a used reference is **409** `REFERENCE_REUSED`.\n* Both the ledger and the available balance go up by the amount.\n\n### How to test (direct call, development only)\n1. Credit `5000.00` NGN with reference `test-1`: **201**, balances `5000.00`.\n2. Repeat exactly: **200**, same body, balance still `5000.00`.\n3. Reuse `test-1` with `6000.00`: **409** `REFERENCE_REUSED`.\n4. Credit a `BLOCKED` or `CLOSED` wallet: **422** `WALLET_NOT_ACCEPTING_FUNDS`. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Amount `0`, negative, or more than 2 decimals: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"frozen-in-{{fundRef}}\",\n  \"amount\": 500.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"balance is 3500.00\", () => pm.expect(pm.response.json().ledgerBalanceAfter).to.eql(3500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Block the wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Actor",
+                "value": "ops.jane",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/status",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "status"
+              ]
+            },
+            "description": "**Freeze, block, reactivate or close a wallet**\n\nMoves a wallet to a new status. **Internal only.** Needs `X-Actor` (who is doing this) and a reason; both are kept in the audit trail.\n\n### The status rules\n| Status | Can send money | Can receive money |\n|---|---|---|\n| `ACTIVE` | yes | yes |\n| `FROZEN` | no | yes |\n| `BLOCKED` | no | no |\n| `CLOSED` | no | no (final, cannot be reopened) |\n\nAllowed changes: `ACTIVE`, `FROZEN` and `BLOCKED` can each become either of the other two, and any of them can become `CLOSED`. A `CLOSED` wallet cannot change. **Closing needs a balance of exactly zero**, checked at the moment of closing so a deposit arriving at the same time is never lost.\n\n### How to test (direct call, development only)\n1. Freeze an active wallet with `{\"status\":\"FROZEN\",\"reason\":\"Customer request\"}` and `X-Actor: ops.jane`: **200**, history shows the change.\n2. Debit it (see the debit endpoint): **422** `WALLET_NOT_ACTIVE`. Credit it: allowed.\n3. Set the same status again: **422** `WALLET_STATUS_UNCHANGED`. Change a closed wallet: **422** `INVALID_STATUS_TRANSITION`.\n4. Close a wallet that holds money: **422** `WALLET_NOT_EMPTY`.\n5. Omit `X-Actor` or the reason: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"BLOCKED\",\n  \"reason\": \"Postman test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"now BLOCKED\", () => pm.expect(pm.response.json().wallet.status).to.eql(\"BLOCKED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send money to the blocked wallet (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/credit",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "credit"
+              ]
+            },
+            "description": "**What this checks:** a blocked wallet can neither send nor receive.\n\n---\n\n**Put money into a wallet**\n\nAdds money to a wallet. **Internal only.** This is the building block that wallet funding and transfers use; customers never call it.\n\n### How it works\n* The wallet must be `ACTIVE` or `FROZEN`, and the currency must match the wallet's.\n* `reference` must be unique. Sending the **same reference with the same details** again returns the original result with **200** and adds nothing; a different movement with a used reference is **409** `REFERENCE_REUSED`.\n* Both the ledger and the available balance go up by the amount.\n\n### How to test (direct call, development only)\n1. Credit `5000.00` NGN with reference `test-1`: **201**, balances `5000.00`.\n2. Repeat exactly: **200**, same body, balance still `5000.00`.\n3. Reuse `test-1` with `6000.00`: **409** `REFERENCE_REUSED`.\n4. Credit a `BLOCKED` or `CLOSED` wallet: **422** `WALLET_NOT_ACCEPTING_FUNDS`. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Amount `0`, negative, or more than 2 decimals: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"blocked-{{fundRef}}\",\n  \"amount\": 10.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is WALLET_NOT_ACCEPTING_FUNDS\", () => pm.expect(pm.response.json().error).to.eql(\"WALLET_NOT_ACCEPTING_FUNDS\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Close a wallet that holds money (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Actor",
+                "value": "ops.jane",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/status",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "status"
+              ]
+            },
+            "description": "**Freeze, block, reactivate or close a wallet**\n\nMoves a wallet to a new status. **Internal only.** Needs `X-Actor` (who is doing this) and a reason; both are kept in the audit trail.\n\n### The status rules\n| Status | Can send money | Can receive money |\n|---|---|---|\n| `ACTIVE` | yes | yes |\n| `FROZEN` | no | yes |\n| `BLOCKED` | no | no |\n| `CLOSED` | no | no (final, cannot be reopened) |\n\nAllowed changes: `ACTIVE`, `FROZEN` and `BLOCKED` can each become either of the other two, and any of them can become `CLOSED`. A `CLOSED` wallet cannot change. **Closing needs a balance of exactly zero**, checked at the moment of closing so a deposit arriving at the same time is never lost.\n\n### How to test (direct call, development only)\n1. Freeze an active wallet with `{\"status\":\"FROZEN\",\"reason\":\"Customer request\"}` and `X-Actor: ops.jane`: **200**, history shows the change.\n2. Debit it (see the debit endpoint): **422** `WALLET_NOT_ACTIVE`. Credit it: allowed.\n3. Set the same status again: **422** `WALLET_STATUS_UNCHANGED`. Change a closed wallet: **422** `INVALID_STATUS_TRANSITION`.\n4. Close a wallet that holds money: **422** `WALLET_NOT_EMPTY`.\n5. Omit `X-Actor` or the reason: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"CLOSED\",\n  \"reason\": \"Postman test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is WALLET_NOT_EMPTY\", () => pm.expect(pm.response.json().error).to.eql(\"WALLET_NOT_EMPTY\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Change status without saying who (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/status",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "status"
+              ]
+            },
+            "description": "**Freeze, block, reactivate or close a wallet**\n\nMoves a wallet to a new status. **Internal only.** Needs `X-Actor` (who is doing this) and a reason; both are kept in the audit trail.\n\n### The status rules\n| Status | Can send money | Can receive money |\n|---|---|---|\n| `ACTIVE` | yes | yes |\n| `FROZEN` | no | yes |\n| `BLOCKED` | no | no |\n| `CLOSED` | no | no (final, cannot be reopened) |\n\nAllowed changes: `ACTIVE`, `FROZEN` and `BLOCKED` can each become either of the other two, and any of them can become `CLOSED`. A `CLOSED` wallet cannot change. **Closing needs a balance of exactly zero**, checked at the moment of closing so a deposit arriving at the same time is never lost.\n\n### How to test (direct call, development only)\n1. Freeze an active wallet with `{\"status\":\"FROZEN\",\"reason\":\"Customer request\"}` and `X-Actor: ops.jane`: **200**, history shows the change.\n2. Debit it (see the debit endpoint): **422** `WALLET_NOT_ACTIVE`. Credit it: allowed.\n3. Set the same status again: **422** `WALLET_STATUS_UNCHANGED`. Change a closed wallet: **422** `INVALID_STATUS_TRANSITION`.\n4. Close a wallet that holds money: **422** `WALLET_NOT_EMPTY`.\n5. Omit `X-Actor` or the reason: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"ACTIVE\",\n  \"reason\": \"Postman test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reactivate the wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Actor",
+                "value": "ops.jane",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/status",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "status"
+              ]
+            },
+            "description": "**Freeze, block, reactivate or close a wallet**\n\nMoves a wallet to a new status. **Internal only.** Needs `X-Actor` (who is doing this) and a reason; both are kept in the audit trail.\n\n### The status rules\n| Status | Can send money | Can receive money |\n|---|---|---|\n| `ACTIVE` | yes | yes |\n| `FROZEN` | no | yes |\n| `BLOCKED` | no | no |\n| `CLOSED` | no | no (final, cannot be reopened) |\n\nAllowed changes: `ACTIVE`, `FROZEN` and `BLOCKED` can each become either of the other two, and any of them can become `CLOSED`. A `CLOSED` wallet cannot change. **Closing needs a balance of exactly zero**, checked at the moment of closing so a deposit arriving at the same time is never lost.\n\n### How to test (direct call, development only)\n1. Freeze an active wallet with `{\"status\":\"FROZEN\",\"reason\":\"Customer request\"}` and `X-Actor: ops.jane`: **200**, history shows the change.\n2. Debit it (see the debit endpoint): **422** `WALLET_NOT_ACTIVE`. Credit it: allowed.\n3. Set the same status again: **422** `WALLET_STATUS_UNCHANGED`. Change a closed wallet: **422** `INVALID_STATUS_TRANSITION`.\n4. Close a wallet that holds money: **422** `WALLET_NOT_EMPTY`.\n5. Omit `X-Actor` or the reason: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"ACTIVE\",\n  \"reason\": \"Postman test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACTIVE again, with the full history\", () => { const b = pm.response.json(); pm.expect(b.wallet.status).to.eql(\"ACTIVE\"); pm.expect(b.statusHistory.length).to.eql(3); pm.expect(b.statusHistory[0].actor).to.eql(\"ops.jane\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Change status without the key (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Actor",
+                "value": "ops.jane",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{walletServiceUrl}}/internal/wallets/{{walletId}}/status",
+              "host": [
+                "{{walletServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "wallets",
+                "{{walletId}}",
+                "status"
+              ]
+            },
+            "description": "**Freeze, block, reactivate or close a wallet**\n\nMoves a wallet to a new status. **Internal only.** Needs `X-Actor` (who is doing this) and a reason; both are kept in the audit trail.\n\n### The status rules\n| Status | Can send money | Can receive money |\n|---|---|---|\n| `ACTIVE` | yes | yes |\n| `FROZEN` | no | yes |\n| `BLOCKED` | no | no |\n| `CLOSED` | no | no (final, cannot be reopened) |\n\nAllowed changes: `ACTIVE`, `FROZEN` and `BLOCKED` can each become either of the other two, and any of them can become `CLOSED`. A `CLOSED` wallet cannot change. **Closing needs a balance of exactly zero**, checked at the moment of closing so a deposit arriving at the same time is never lost.\n\n### How to test (direct call, development only)\n1. Freeze an active wallet with `{\"status\":\"FROZEN\",\"reason\":\"Customer request\"}` and `X-Actor: ops.jane`: **200**, history shows the change.\n2. Debit it (see the debit endpoint): **422** `WALLET_NOT_ACTIVE`. Credit it: allowed.\n3. Set the same status again: **422** `WALLET_STATUS_UNCHANGED`. Change a closed wallet: **422** `INVALID_STATUS_TRANSITION`.\n4. Close a wallet that holds money: **422** `WALLET_NOT_EMPTY`.\n5. Omit `X-Actor` or the reason: **400**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"FROZEN\",\n  \"reason\": \"Postman test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My wallet now shows 3,500.00 (through the gateway)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "**View one of my wallets**\n\nShows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACTIVE, 3500.00 ledger and available\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql(\"ACTIVE\"); pm.expect(b.ledgerBalance).to.eql(3500); pm.expect(b.availableBalance).to.eql(3500); });"
                 ]
               }
             }

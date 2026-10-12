@@ -166,6 +166,10 @@ services:
     ports: ["8083:8083"]
     environment:
       SERVER_PORT: 8083
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      KYC_SERVICE_URL: http://kyc-service:8087
+      WALLET_SUPPORTED_CURRENCIES: ${WALLET_SUPPORTED_CURRENCIES:-NGN}
       SPRING_DATASOURCE_URL: jdbc:postgresql://wallet-db:5432/wallet_db
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-flowpay}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
@@ -173,6 +177,7 @@ services:
     depends_on:
       wallet-db: {condition: service_healthy}
       redis: {condition: service_healthy}
+      kyc-service: {condition: service_started}
 
   transaction-service:
     build: {context: ., args: {SERVICE: transaction-service}}
