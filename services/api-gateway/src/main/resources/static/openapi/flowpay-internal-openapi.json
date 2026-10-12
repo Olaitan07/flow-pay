@@ -3,7 +3,7 @@
   "info": {
     "title": "FlowPay internal service APIs",
     "version": "v1",
-    "description": "Service-to-service endpoints. They are **not** reachable through the gateway: call the services directly\n(auth-service on port 8081, notification-service on port 8086) with the `X-Internal-Api-Key` header\n(`INTERNAL_API_KEY` from your `.env`). Intended for development and debugging only.\n"
+    "description": "Service-to-service endpoints. They are **not** reachable through the gateway: call the services directly\n(auth-service on port 8081, notification-service on port 8086, kyc-service on port 8087) with the `X-Internal-Api-Key` header\n(`INTERNAL_API_KEY` from your `.env`). Intended for development and debugging only.\n"
   },
   "servers": [
     {
@@ -12,6 +12,10 @@
     }
   ],
   "tags": [
+    {
+      "name": "Internal: KYC",
+      "description": "Reviewer and service-to-service endpoints. Not reachable through the gateway; call kyc-service directly (port 8087) with the X-Internal-Api-Key header."
+    },
     {
       "name": "Internal: credentials",
       "description": "Service-to-service only. Not reachable through the gateway; call auth-service directly (port 8081) with the X-Internal-Api-Key header."
@@ -91,6 +95,401 @@
         }
       ]
     },
+    "/internal/kyc/customers/{customerId}/authorize": {
+      "post": {
+        "tags": [
+          "Internal: KYC"
+        ],
+        "summary": "May this customer do this, for this amount?",
+        "description": "The enforcement point. Wallet and transfer services call this **before** moving money, so the rule holds whether the request came from an app, a browser or a direct API call. **Internal only.**\n\n### How it works\nChecks, in order: the currency is supported (`UNSUPPORTED_CURRENCY`), the customer's level allows the operation (`KYC_LEVEL_TOO_LOW`, with `requiredLevel`), and the amount is within the level's single-transaction cap (`KYC_LIMIT_EXCEEDED`).\nA refusal is a normal `200` with `allowed: false`: the caller must stop and surface the reason. Amounts are decimals with at most 2 places; the currency is always explicit.\n\n### How to test (direct call, development only)\n1. Level 0 customer, `FUND_WALLET` 1000.00 NGN: `allowed: false`, `KYC_LEVEL_TOO_LOW`, `requiredLevel: 1`.\n2. After tier 1: `P2P_TRANSFER` 10000.00 NGN is allowed; 60000.00 is `KYC_LIMIT_EXCEEDED`; `EXTERNAL_TRANSFER` is `KYC_LEVEL_TOO_LOW` (`requiredLevel: 2`).\n3. After tier 2: all three are allowed up to the higher cap.\n4. Currency `USD`: `UNSUPPORTED_CURRENCY`. Amount `-5` or `1.234`: **400**.\n",
+        "operationId": "authorizeOperation",
+        "parameters": [
+          {
+            "name": "customerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizeOperationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The decision (check `allowed`).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationDecision"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR (amount or currency invalid).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8087",
+          "description": "kyc-service (direct)"
+        }
+      ]
+    },
+    "/internal/kyc/customers/{customerId}/capabilities": {
+      "get": {
+        "tags": [
+          "Internal: KYC"
+        ],
+        "summary": "What may this customer do?",
+        "description": "Returns a customer's current verification level and what it allows. **Internal only.**\n\n### How it works\nRead live from the database every time (never from a token or cache), so it cannot be stale. A customer with no verified tier is level 0.\n\n### How to test (direct call, development only)\n1. Call it for a new customer: level 0, no operations.\n2. Approve their tier 1: level 1 allows `FUND_WALLET`, `P2P_TRANSFER` up to 50,000.00 NGN.\n3. Approve tier 2: level 2 also allows `EXTERNAL_TRANSFER`, up to 5,000,000.00 NGN.\n",
+        "operationId": "getCustomerCapabilities",
+        "parameters": [
+          {
+            "name": "customerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The customer's capabilities.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8087",
+          "description": "kyc-service (direct)"
+        }
+      ]
+    },
+    "/internal/kyc/submissions": {
+      "get": {
+        "tags": [
+          "Internal: KYC"
+        ],
+        "summary": "List submissions waiting for review",
+        "description": "The reviewer's work queue, oldest first. **Internal only.**\n\n### How it works\nReturns `PENDING` and `REQUIRES_REVIEW` submissions. ID numbers are **masked** in this list; open one submission to see the full details.\n\n### How to test (direct call, development only)\n1. A customer submits tier 1 or 2 (`POST /api/v1/kyc/tiers/1`).\n2. Call this endpoint with the `X-Internal-Api-Key` header. The submission appears, status `PENDING`.\n3. Submit the same ID number from a second customer: that one appears as `REQUIRES_REVIEW`.\n4. Omit the key: **401**.\n",
+        "operationId": "listReviewQueue",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Zero-based page.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 0,
+              "minimum": 0
+            },
+            "example": 0
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "Page size, 1-100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1
+            },
+            "example": 20
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The queue.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewQueueItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8087",
+          "description": "kyc-service (direct)"
+        }
+      ]
+    },
+    "/internal/kyc/submissions/{id}": {
+      "get": {
+        "tags": [
+          "Internal: KYC"
+        ],
+        "summary": "Open a submission (shows the full ID number)",
+        "description": "Everything a reviewer needs to decide, including the **decrypted ID number**. **Internal only.** Requires `X-Reviewer`.\n\n### How it works\nEvery call is written to the audit trail as `SENSITIVE_DATA_VIEWED` with the reviewer's name, so it is always known who looked at an ID number and when.\nThe response includes the submission's full history, oldest first.\n\n### How to test (direct call, development only)\n1. Take an id from the review queue.\n2. Call this endpoint with `X-Internal-Api-Key` and `X-Reviewer: reviewer.jane`. Expect **200** with the full number.\n3. Call it again: the `history` now has two `SENSITIVE_DATA_VIEWED` lines.\n4. Omit `X-Reviewer`: **400**. Unknown id: **404**.\n",
+        "operationId": "getSubmissionForReview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Reviewer",
+            "in": "header",
+            "description": "Who is looking. Recorded in the audit trail.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "minLength": 0
+            },
+            "example": "reviewer.jane"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The submission, with sensitive data.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "X-Reviewer header missing.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "KYC_SUBMISSION_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8087",
+          "description": "kyc-service (direct)"
+        }
+      ]
+    },
+    "/internal/kyc/submissions/{id}/decision": {
+      "post": {
+        "tags": [
+          "Internal: KYC"
+        ],
+        "summary": "Approve or reject a submission",
+        "description": "Records the reviewer's decision. **Internal only.** Requires `X-Reviewer`.\n\n### How it works\n* `APPROVE` -> the tier becomes `VERIFIED` and the customer's level rises. An event (`KYC_LEVEL_CHANGED`, ids only) is published to Kafka so other services react; user-service then moves the account from `PENDING_VERIFICATION` to `ACTIVE`.\n* `REJECT` -> `REJECTED`. A **reason is required** and is shown to the customer, who may then submit again.\n* The decision, its audit line and the event are saved in **one transaction**: none can exist without the others.\n* A submission can be decided **once**. If two reviewers act at the same moment exactly one succeeds; the other gets `409 KYC_NOT_REVIEWABLE`.\n\n### How to test (direct call, development only)\n1. Submit tier 1 as a customer, take its id from the queue.\n2. `POST` `{\"decision\":\"APPROVE\"}` with the key and `X-Reviewer`. Expect **200** with `status: VERIFIED` and `customerLevel: 1`.\n3. `GET /api/v1/kyc` as the customer: level is 1. A few seconds later their profile status is `ACTIVE`.\n4. Decide the same submission again: **409 KYC_NOT_REVIEWABLE**.\n5. Reject without a `reason`: **400**.\n",
+        "operationId": "decideSubmission",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Reviewer",
+            "in": "header",
+            "description": "Who is deciding. Recorded in the audit trail.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "minLength": 0
+            },
+            "example": "reviewer.jane"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Decision recorded.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR (e.g. missing reason on REJECT, missing X-Reviewer).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "KYC_SUBMISSION_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "KYC_NOT_REVIEWABLE: already decided.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8087",
+          "description": "kyc-service (direct)"
+        }
+      ]
+    },
     "/internal/notifications/email": {
       "post": {
         "tags": [
@@ -167,6 +566,113 @@
   },
   "components": {
     "schemas": {
+      "AuthorizationDecision": {
+        "type": "object",
+        "description": "The policy's answer. If allowed is false, do not perform the operation.",
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "example": false
+          },
+          "level": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's current verified level.",
+            "example": 1
+          },
+          "reasonCode": {
+            "type": "string",
+            "description": "Why it was refused: KYC_LEVEL_TOO_LOW, KYC_LIMIT_EXCEEDED or UNSUPPORTED_CURRENCY. Null when allowed.",
+            "example": "KYC_LIMIT_EXCEEDED"
+          },
+          "requiredLevel": {
+            "type": "integer",
+            "format": "int32",
+            "description": "For KYC_LEVEL_TOO_LOW: the lowest level that allows the operation.",
+            "example": 2
+          },
+          "maxSingleTransactionAmount": {
+            "type": "number",
+            "description": "The largest single transaction this level may make.",
+            "example": 50000.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          }
+        }
+      },
+      "AuthorizeOperationRequest": {
+        "type": "object",
+        "description": "A question to the KYC policy: may this customer do this, for this amount?",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "description": "What the customer is trying to do.",
+            "enum": [
+              "FUND_WALLET",
+              "P2P_TRANSFER",
+              "EXTERNAL_TRANSFER"
+            ],
+            "example": "P2P_TRANSFER"
+          },
+          "amount": {
+            "type": "number",
+            "description": "Amount, at most 2 decimal places. Money is never a floating-point number.",
+            "example": 10000.0,
+            "minimum": 0.01
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency. Always explicit; never assumed.",
+            "example": "NGN",
+            "minLength": 1,
+            "pattern": "^[A-Z]{3}$"
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "operation"
+        ]
+      },
+      "CapabilitiesResponse": {
+        "type": "object",
+        "description": "What a verification level allows.",
+        "properties": {
+          "level": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0 = registered only, 1 = basic, 2 = full.",
+            "example": 1
+          },
+          "allowedOperations": {
+            "type": "array",
+            "description": "Operations this level may perform.",
+            "example": [
+              "FUND_WALLET",
+              "P2P_TRANSFER"
+            ],
+            "items": {
+              "type": "string",
+              "enum": [
+                "FUND_WALLET",
+                "P2P_TRANSFER",
+                "EXTERNAL_TRANSFER"
+              ]
+            }
+          },
+          "maxSingleTransactionAmount": {
+            "type": "number",
+            "description": "Largest single transaction this level may make.",
+            "example": 50000.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          }
+        }
+      },
       "CreateCredentialRequest": {
         "type": "object",
         "description": "Internal: login credentials for a newly registered customer.",
@@ -197,6 +703,33 @@
           "email",
           "password"
         ]
+      },
+      "DecisionResponse": {
+        "type": "object",
+        "description": "The result of a review decision.",
+        "properties": {
+          "submissionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "NOT_STARTED",
+              "PENDING",
+              "REQUIRES_REVIEW",
+              "VERIFIED",
+              "REJECTED"
+            ],
+            "example": "VERIFIED"
+          },
+          "customerLevel": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's verification level after this decision.",
+            "example": 1
+          }
+        }
       },
       "ErrorResponse": {
         "type": "object",
@@ -230,6 +763,28 @@
           }
         }
       },
+      "HistoryEntry": {
+        "type": "object",
+        "description": "One line of the audit trail.",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "SUBMITTED"
+          },
+          "actor": {
+            "type": "string",
+            "description": "The customer id for submissions, or the reviewer's name.",
+            "example": "reviewer.jane"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "NotificationResponse": {
         "type": "object",
         "description": "Result of a send.",
@@ -247,6 +802,165 @@
               "FAILED"
             ],
             "example": "SENT"
+          }
+        }
+      },
+      "ReviewDecisionRequest": {
+        "type": "object",
+        "description": "A reviewer's decision on a submission.",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "description": "APPROVE verifies the tier. REJECT turns it down.",
+            "enum": [
+              "APPROVE",
+              "REJECT"
+            ],
+            "example": "APPROVE"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required for REJECT (shown to the customer). Optional note for APPROVE.",
+            "example": "ID number does not match the name on the account.",
+            "maxLength": 500,
+            "minLength": 0
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "ReviewDetailResponse": {
+        "type": "object",
+        "description": "Everything a reviewer needs, including the full ID number. Viewing it is recorded in the audit trail.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "customerId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tier": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "NOT_STARTED",
+              "PENDING",
+              "REQUIRES_REVIEW",
+              "VERIFIED",
+              "REJECTED"
+            ]
+          },
+          "submittedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decidedBy": {
+            "type": "string"
+          },
+          "decisionReason": {
+            "type": "string"
+          },
+          "dateOfBirth": {
+            "type": "string",
+            "format": "date"
+          },
+          "addressLine1": {
+            "type": "string"
+          },
+          "addressLine2": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "postalCode": {
+            "type": "string"
+          },
+          "addressCountry": {
+            "type": "string"
+          },
+          "idType": {
+            "type": "string",
+            "enum": [
+              "NIN",
+              "BVN",
+              "PASSPORT",
+              "DRIVERS_LICENSE",
+              "NATIONAL_ID"
+            ]
+          },
+          "idNumber": {
+            "type": "string",
+            "description": "The full ID number (decrypted). Handle with care.",
+            "example": "12345678901"
+          },
+          "history": {
+            "type": "array",
+            "description": "Everything that happened to this submission, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/HistoryEntry"
+            }
+          }
+        }
+      },
+      "ReviewQueueItem": {
+        "type": "object",
+        "description": "A submission waiting for a decision. Sensitive data is masked in the list.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "customerId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tier": {
+            "type": "integer",
+            "format": "int32",
+            "example": 2
+          },
+          "status": {
+            "type": "string",
+            "description": "REQUIRES_REVIEW means an automatic check flagged it (for example the ID was used by another customer).",
+            "enum": [
+              "NOT_STARTED",
+              "PENDING",
+              "REQUIRES_REVIEW",
+              "VERIFIED",
+              "REJECTED"
+            ]
+          },
+          "submittedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "idType": {
+            "type": "string",
+            "enum": [
+              "NIN",
+              "BVN",
+              "PASSPORT",
+              "DRIVERS_LICENSE",
+              "NATIONAL_ID"
+            ]
+          },
+          "maskedIdNumber": {
+            "type": "string",
+            "example": "*******8901"
           }
         }
       },

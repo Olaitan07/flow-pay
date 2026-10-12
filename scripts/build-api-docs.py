@@ -11,7 +11,7 @@ documentation always comes from the annotations in the code, then writes:
   services/api-gateway/src/main/resources/static/openapi/*.json   served by the gateway's Swagger UI
 
 Usage: python3 scripts/build-api-docs.py
-Override service URLs with USER_URL, AUTH_URL, NOTIFICATION_URL if you changed the ports.
+Override service URLs with USER_URL, AUTH_URL, NOTIFICATION_URL, KYC_URL if you changed the ports.
 """
 import json
 import os
@@ -26,6 +26,7 @@ GATEWAY_STATIC = os.path.join(ROOT, "services", "api-gateway", "src", "main", "r
 USER_URL = os.environ.get("USER_URL", "http://localhost:8082")
 AUTH_URL = os.environ.get("AUTH_URL", "http://localhost:8081")
 NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "http://localhost:8086")
+KYC_URL = os.environ.get("KYC_URL", "http://localhost:8087")
 GATEWAY_URL = "http://localhost:8080"
 
 
@@ -52,6 +53,7 @@ FlowPay is a digital wallet platform. This is the **public API**, reached throug
 2. **Log in** - `POST /api/v1/auth/login` -> copy the `accessToken`
 3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.
 4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`
+5. **Verify your identity** - `GET /api/v1/kyc`, then `POST /api/v1/kyc/tiers/1` and `/tiers/2`. Your verification level decides what you may do with money.
 
 ## How security works
 * Only registration, login, refresh, logout, password reset and the health check are public.
@@ -67,17 +69,17 @@ Password reset and two-step verification send real emails to a local inbox (Mail
 
 INTERNAL_OVERVIEW = """\
 Service-to-service endpoints. They are **not** reachable through the gateway: call the services directly
-(auth-service on port 8081, notification-service on port 8086) with the `X-Internal-Api-Key` header
+(auth-service on port 8081, notification-service on port 8086, kyc-service on port 8087) with the `X-Internal-Api-Key` header
 (`INTERNAL_API_KEY` from your `.env`). Intended for development and debugging only.
 """
 
 
-def merge_specs(user, auth, notification):
+def merge_specs(user, auth, notification, kyc):
     public_paths, internal_paths = {}, {}
     schemas, tags = {}, {}
 
     for name, spec, base in (("user", user, USER_URL), ("auth", auth, AUTH_URL),
-                             ("notification", notification, NOTIFICATION_URL)):
+                             ("notification", notification, NOTIFICATION_URL), ("kyc", kyc, KYC_URL)):
         for path, item in spec["paths"].items():
             if path.startswith("/internal"):
                 item = dict(item)
@@ -397,6 +399,92 @@ def build_requests():
     R.append(request(F7, "Send an email with a missing variable (expect 400)", "sendEmail", url="{{notificationServiceUrl}}/internal/notifications/email",
         auth="none", headers=key, body={"type": "LOGIN_OTP", "recipient": "test@example.com", "variables": {}},
         tests=js(STATUS(400, "Bad Request"), 'pm.test("error is INVALID_NOTIFICATION", () => pm.expect(pm.response.json().error).to.eql("INVALID_NOTIFICATION"));')))
+    F8 = "8. Identity verification (KYC)"
+    R.append(request(F8, "Log in (fresh token for this folder)", "login", body=LOGIN_BODY, auth="none",
+        tests=js(STATUS(200, "OK"), "const body = pm.response.json();",
+                 SAVE("accessToken", "body.accessToken"), SAVE("refreshToken", "body.refreshToken"))))
+    R.append(request(F8, "See my verification status", "getKycStatus",
+        note="A new customer is level 0 with nothing started, and may not move money yet.",
+        tests=js(STATUS(200, "OK"), "const body = pm.response.json();",
+                 'pm.test("is my status, level 0", () => { pm.expect(body.customerId).to.eql(pm.collectionVariables.get("customerId")); pm.expect(body.level).to.eql(0); });',
+                 'pm.test("both tiers NOT_STARTED", () => body.tiers.forEach(t => pm.expect(t.status).to.eql("NOT_STARTED")));',
+                 'pm.test("no operations allowed", () => pm.expect(body.capabilities.allowedOperations).to.eql([]));')))
+    R.append(request(F8, "See my status without a token (expect 401)", "getKycStatus", auth="none",
+        note="**What this checks:** the gateway refuses requests with no access token.",
+        tests=js(STATUS(401, "Unauthorized"))))
+    R.append(request(F8, "Submit tier 2 before tier 1 (expect 422)", "submitTierTwo",
+        body={"idType": "NIN", "idNumber": "12345678901"},
+        note="**What this checks:** tier 2 needs a verified tier 1 first.",
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is KYC_TIER_PREREQUISITE", () => pm.expect(pm.response.json().error).to.eql("KYC_TIER_PREREQUISITE"));')))
+    R.append(request(F8, "Submit tier 1 as someone under 18 (expect 422)", "submitTierOne",
+        body={"dateOfBirth": "2020-01-01", "addressLine1": "12 Marina Road", "city": "Lagos", "state": "Lagos", "postalCode": "101233", "country": "NG"},
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is KYC_NOT_ELIGIBLE", () => pm.expect(pm.response.json().error).to.eql("KYC_NOT_ELIGIBLE"));')))
+    R.append(request(F8, "Submit tier 1", "submitTierOne",
+        body={"dateOfBirth": "1990-05-14", "addressLine1": "12 Marina Road", "city": "Lagos", "state": "Lagos", "postalCode": "101233", "country": "NG"},
+        note="Recorded as `PENDING` and waits for a person to review it. The submission id is saved as `submissionId`.",
+        tests=js(STATUS(201, "Created"), "const body = pm.response.json();",
+                 'pm.test("recorded as PENDING", () => pm.expect(body.status).to.eql("PENDING"));',
+                 SAVE("submissionId", "body.id"))))
+    R.append(request(F8, "Submit tier 1 again (expect 409)", "submitTierOne",
+        body={"dateOfBirth": "1990-05-14", "addressLine1": "12 Marina Road", "city": "Lagos", "state": "Lagos", "postalCode": "101233", "country": "NG"},
+        note="**What this checks:** only one open submission per tier.",
+        tests=js(STATUS(409, "Conflict"), 'pm.test("error is KYC_ALREADY_SUBMITTED", () => pm.expect(pm.response.json().error).to.eql("KYC_ALREADY_SUBMITTED"));')))
+    R.append(request(F8, "Status while waiting for review", "getKycStatus",
+        note="Still level 0: a pending tier grants nothing.",
+        tests=js(STATUS(200, "OK"), "const body = pm.response.json();",
+                 'pm.test("tier 1 PENDING, level still 0", () => { pm.expect(body.tiers[0].status).to.eql("PENDING"); pm.expect(body.level).to.eql(0); });')))
+
+    F9 = "9. KYC review and enforcement (developers only)"
+    key = [("X-Internal-Api-Key", "{{internalApiKey}}")]
+    reviewer = key + [("X-Reviewer", "reviewer.jane")]
+    R.append(request(F9, "Capabilities at level 0", "getCustomerCapabilities",
+        url="{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/capabilities", auth="none", headers=key,
+        note="**Needs `internalApiKey`.** Calls kyc-service directly on port 8087, not the gateway. Run folder 8 first.",
+        tests=js(STATUS(200, "OK"), 'pm.test("level 0, nothing allowed", () => { const b = pm.response.json(); pm.expect(b.level).to.eql(0); pm.expect(b.allowedOperations).to.eql([]); });')))
+    R.append(request(F9, "Capabilities without the key (expect 401)", "getCustomerCapabilities",
+        url="{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/capabilities", auth="none",
+        tests=js(STATUS(401, "Unauthorized"))))
+    R.append(request(F9, "Authorize a transfer at level 0 (expect refused)", "authorizeOperation",
+        url="{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/authorize", auth="none", headers=key,
+        body={"operation": "P2P_TRANSFER", "amount": "1000.00", "currency": "NGN"},
+        note="**What this checks:** the enforcement point. Wallet and transfer services call this before moving money, so the rule holds for a direct API call too.",
+        tests=js(STATUS(200, "OK"), 'pm.test("refused: level too low", () => { const b = pm.response.json(); pm.expect(b.allowed).to.eql(false); pm.expect(b.reasonCode).to.eql("KYC_LEVEL_TOO_LOW"); pm.expect(b.requiredLevel).to.eql(1); });')))
+    R.append(request(F9, "List submissions waiting for review", "listReviewQueue",
+        url="{{kycServiceUrl}}/internal/kyc/submissions", auth="none", headers=key,
+        tests=js(STATUS(200, "OK"), 'pm.test("my submission is in the queue", () => pm.expect(pm.response.json().map(s => s.id)).to.include(pm.collectionVariables.get("submissionId")));')))
+    R.append(request(F9, "Open the submission as a reviewer", "getSubmissionForReview",
+        url="{{kycServiceUrl}}/internal/kyc/submissions/{{submissionId}}", auth="none", headers=reviewer,
+        note="Every open is written to the audit trail with the reviewer's name.",
+        tests=js(STATUS(200, "OK"), 'pm.test("shows the submission and its history", () => { const b = pm.response.json(); pm.expect(b.id).to.eql(pm.collectionVariables.get("submissionId")); pm.expect(b.history).to.be.an("array"); });')))
+    R.append(request(F9, "Reject without a reason (expect 400)", "decideSubmission",
+        url="{{kycServiceUrl}}/internal/kyc/submissions/{{submissionId}}/decision", auth="none", headers=reviewer,
+        body={"decision": "REJECT"},
+        tests=js(STATUS(400, "Bad Request"), 'pm.test("error is VALIDATION_ERROR", () => pm.expect(pm.response.json().error).to.eql("VALIDATION_ERROR"));')))
+    R.append(request(F9, "Approve tier 1", "decideSubmission",
+        url="{{kycServiceUrl}}/internal/kyc/submissions/{{submissionId}}/decision", auth="none", headers=reviewer,
+        body={"decision": "APPROVE"},
+        tests=js(STATUS(200, "OK"), 'pm.test("verified, customer is level 1", () => { const b = pm.response.json(); pm.expect(b.status).to.eql("VERIFIED"); pm.expect(b.customerLevel).to.eql(1); });')))
+    R.append(request(F9, "Approve the same submission again (expect 409)", "decideSubmission",
+        url="{{kycServiceUrl}}/internal/kyc/submissions/{{submissionId}}/decision", auth="none", headers=reviewer,
+        body={"decision": "APPROVE"},
+        note="**What this checks:** a decision cannot be repeated.",
+        tests=js(STATUS(409, "Conflict"), 'pm.test("error is KYC_NOT_REVIEWABLE", () => pm.expect(pm.response.json().error).to.eql("KYC_NOT_REVIEWABLE"));')))
+    R.append(request(F9, "Authorize a transfer at level 1 (expect allowed)", "authorizeOperation",
+        url="{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/authorize", auth="none", headers=key,
+        body={"operation": "P2P_TRANSFER", "amount": "1000.00", "currency": "NGN"},
+        tests=js(STATUS(200, "OK"), 'pm.test("allowed", () => pm.expect(pm.response.json().allowed).to.eql(true));')))
+    R.append(request(F9, "Authorize an external transfer at level 1 (expect refused)", "authorizeOperation",
+        url="{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/authorize", auth="none", headers=key,
+        body={"operation": "EXTERNAL_TRANSFER", "amount": "1000.00", "currency": "NGN"},
+        note="**What this checks:** external transfers need level 2.",
+        tests=js(STATUS(200, "OK"), 'pm.test("refused: needs level 2", () => { const b = pm.response.json(); pm.expect(b.allowed).to.eql(false); pm.expect(b.requiredLevel).to.eql(2); });')))
+    R.append(request(F9, "Authorize above the level 1 limit (expect refused)", "authorizeOperation",
+        url="{{kycServiceUrl}}/internal/kyc/customers/{{customerId}}/authorize", auth="none", headers=key,
+        body={"operation": "P2P_TRANSFER", "amount": "50000.01", "currency": "NGN"},
+        note="**What this checks:** level 1 is capped at 50,000.00 NGN per transaction.",
+        tests=js(STATUS(200, "OK"), 'pm.test("refused: over the limit", () => { const b = pm.response.json(); pm.expect(b.allowed).to.eql(false); pm.expect(b.reasonCode).to.eql("KYC_LIMIT_EXCEEDED"); });')))
+    R.append(request(F9, "My status now shows level 1 (through the gateway)", "getKycStatus",
+        tests=js(STATUS(200, "OK"), 'pm.test("level 1, tier 1 VERIFIED", () => { const b = pm.response.json(); pm.expect(b.level).to.eql(1); pm.expect(b.tiers[0].status).to.eql("VERIFIED"); });')))
     return R
 
 
@@ -442,6 +530,8 @@ def build_collection(ops):
         "5. Password reset": "Forgot-password flow. Reads the emailed token from Mailpit automatically.",
         "6. Two-step verification (email code)": "Turn on the email code, log in with it, then turn it off. Reads the emailed codes from Mailpit automatically.",
         "7. Internal APIs (developers only)": "Service-to-service endpoints called directly on their own ports. Needs `internalApiKey` (INTERNAL_API_KEY from .env).",
+        "8. Identity verification (KYC)": "Check your verification level and submit tier 1. Through the gateway with your bearer token.",
+        "9. KYC review and enforcement (developers only)": "Approve the tier 1 submission as a reviewer, then see how the level changes what is allowed. Calls kyc-service directly; needs `internalApiKey`.",
     }
     collection = {
         "info": {
@@ -452,7 +542,7 @@ def build_collection(ops):
                            "2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n"
                            "3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. "
                            "Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n"
-                           "4. For folder 7 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n"
+                           "4. For folders 7 and 9 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n"
                            "## Good to know\n"
                            "* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; "
                            "when running the whole collection, set a delay of about 1500 ms between requests.\n"
@@ -467,6 +557,7 @@ def build_collection(ops):
             {"key": "mailpitUrl", "value": "http://localhost:8025"},
             {"key": "authServiceUrl", "value": "http://localhost:8081"},
             {"key": "notificationServiceUrl", "value": "http://localhost:8086"},
+            {"key": "kycServiceUrl", "value": "http://localhost:8087"},
             {"key": "password", "value": "Sup3rSecret"},
             {"key": "newPassword", "value": "Brand9NewPass"},
         ],
@@ -484,6 +575,7 @@ def build_environment():
             {"key": "mailpitUrl", "value": "http://localhost:8025", "type": "default", "enabled": True},
             {"key": "authServiceUrl", "value": "http://localhost:8081", "type": "default", "enabled": True},
             {"key": "notificationServiceUrl", "value": "http://localhost:8086", "type": "default", "enabled": True},
+            {"key": "kycServiceUrl", "value": "http://localhost:8087", "type": "default", "enabled": True},
             {"key": "internalApiKey", "value": "", "type": "secret", "enabled": True},
         ],
         "_postman_variable_scope": "environment",
@@ -491,8 +583,8 @@ def build_environment():
 
 
 def main():
-    user, auth, notification = fetch(USER_URL), fetch(AUTH_URL), fetch(NOTIFICATION_URL)
-    public, internal = merge_specs(user, auth, notification)
+    user, auth, notification, kyc = fetch(USER_URL), fetch(AUTH_URL), fetch(NOTIFICATION_URL), fetch(KYC_URL)
+    public, internal = merge_specs(user, auth, notification, kyc)
     ops = operations(public, internal)
 
     dump(os.path.join(DOCS, "flowpay-openapi.json"), public)
