@@ -87,6 +87,20 @@ services:
       timeout: 3s
       retries: 10
 
+  kyc-db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: kyc_db
+      POSTGRES_USER: ${POSTGRES_USER:-flowpay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports: ["5439:5432"]
+    volumes: ["kyc-db-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowpay} -d kyc_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   redis:
     image: redis:7
     ports: ["6379:6379"]
@@ -175,6 +189,22 @@ services:
       redis: {condition: service_healthy}
       kafka: {condition: service_started}
 
+  kyc-service:
+    build: {context: ., args: {SERVICE: kyc-service}}
+    ports: ["8087:8087"]
+    environment:
+      SERVER_PORT: 8087
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+      KYC_ENCRYPTION_KEY: ${KYC_ENCRYPTION_KEY:?set KYC_ENCRYPTION_KEY in .env}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://kyc-db:5432/kyc_db
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-flowpay}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      kyc-db: {condition: service_healthy}
+      kafka: {condition: service_started}
+
   ledger-service:
     build: {context: ., args: {SERVICE: ledger-service}}
     ports: ["8085:8085"]
@@ -221,10 +251,11 @@ services:
       USER_SERVICE_URL: http://user-service:8082
       WALLET_SERVICE_URL: http://wallet-service:8083
       TRANSACTION_SERVICE_URL: http://transaction-service:8084
+      KYC_SERVICE_URL: http://kyc-service:8087
       LEDGER_SERVICE_URL: http://ledger-service:8085
       NOTIFICATION_SERVICE_URL: http://notification-service:8086
       JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?set JWT_PUBLIC_KEY in .env}
-    depends_on: [auth-service, user-service, wallet-service, transaction-service, ledger-service, notification-service]
+    depends_on: [auth-service, user-service, wallet-service, transaction-service, kyc-service, ledger-service, notification-service]
 
 volumes:
   auth-db-data:
@@ -233,5 +264,6 @@ volumes:
   transaction-db-data:
   ledger-db-data:
   notification-db-data:
+  kyc-db-data:
   redis-data:
   kafka-data:
