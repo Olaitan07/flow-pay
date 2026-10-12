@@ -35,7 +35,7 @@ The emails the system sends (password reset links, verification codes) land in t
    * `flowpay.postman_collection.json`
    * `flowpay-local.postman_environment.json`
 2. Top-right environment picker -> select **FlowPay - Local**.
-3. *(Only for folders 7, 9 and 11)* In the environment, set `internalApiKey` to the value of `INTERNAL_API_KEY` in your `.env`.
+3. *(Only for folders 7, 9, 11 and 13)* In the environment, set `internalApiKey` to the value of `INTERNAL_API_KEY` in your `.env`.
 
 ### Run it
 * **Whole journey:** right-click the collection -> **Run collection**. Tick *Delay* and set about **1500 ms** between requests (see "Rate limits" below). About 50 requests, 1.5 minutes.
@@ -62,6 +62,8 @@ Each request has:
 | 9. KYC review and enforcement | Reviewer approves tier 1, repeat decision (409), the authorize check allows or refuses by level, amount and operation, status shows level 1 |
 | 10. Wallets | Open a wallet (needs KYC level 1), duplicate (409), unsupported currency (422), bad currency (400), list, view, someone else's wallet (404) |
 | 11. Wallet rules | Credit and debit, safe retries by reference, overspending (422), frozen / blocked rules, closing only when empty, audited status history |
+| 12. Wallet funding | Ask to add money (PENDING, balance untouched), over the KYC limit (403), wrong currency (422), someone else's wallet (404), invalid amount (400), list and view |
+| 13. Funding confirmation | Provider confirms and the wallet is credited once, repeated confirmation is harmless, failure adds nothing and can never turn into success, amount mismatch is held for review, full audit trail |
 
 ### Variables (set automatically)
 `email`, `phone`, `customerId`, `accessToken`, `refreshToken`, `challengeId`, `otpCode`, `resetToken` ... A fresh customer is registered every run, so you can re-run the collection as often as you like.
@@ -80,8 +82,8 @@ The gateway limits, per IP address per minute: **5** registrations, **10** login
 
 | File | Contents |
 |---|---|
-| `flowpay-openapi.json` | The public API through the gateway (19 operations) |
-| `flowpay-internal-openapi.json` | Internal endpoints (11 operations) on their own ports |
+| `flowpay-openapi.json` | The public API through the gateway (22 operations) |
+| `flowpay-internal-openapi.json` | Internal endpoints (14 operations) on their own ports |
 
 Import either file into Postman (*Import -> File*), Insomnia, or a code generator.
 
@@ -89,7 +91,7 @@ Import either file into Postman (*Import -> File*), Insomnia, or a code generato
 Documentation lives in the controllers and DTOs (`@Operation`, `@ApiResponse`, `@Schema`). After changing them:
 
 ```sh
-docker compose up --build -d user-service auth-service notification-service kyc-service wallet-service   # rebuild with new annotations
+docker compose up --build -d user-service auth-service notification-service kyc-service wallet-service transaction-service   # rebuild with new annotations
 python3 scripts/build-api-docs.py                                             # rewrites everything in docs/api
 docker compose up --build -d api-gateway                                      # so Swagger UI shows the new spec
 ```

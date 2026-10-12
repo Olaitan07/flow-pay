@@ -21,7 +21,7 @@ spring:
             - id: transaction-service
               uri: ${TRANSACTION_SERVICE_URL:http://localhost:8084}
               predicates: 
-                - Path=/api/v1/transfers/**, /api/v1/transactions/**
+                - Path=/api/v1/funding/**, /api/v1/transfers/**, /api/v1/transactions/**
             - id: kyc-service
               uri: ${KYC_SERVICE_URL:http://localhost:8087}
               predicates: [Path=/api/v1/kyc/**]

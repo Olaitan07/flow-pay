@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "FlowPay API",
-    "description": "Runnable collection for the FlowPay API, served through the gateway at {{baseUrl}}.\n\n## How to use\n1. Start the stack: `docker compose up --build -d`.\n2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n4. For folders 7, 9 and 11 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n## Good to know\n* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; when running the whole collection, set a delay of about 1500 ms between requests.\n* Each run registers a brand-new customer, so you can run it repeatedly.\n* Emails go to Mailpit (http://localhost:8025), not to real inboxes.\n* Every request's description explains how the endpoint works and how to test it.",
+    "description": "Runnable collection for the FlowPay API, served through the gateway at {{baseUrl}}.\n\n## How to use\n1. Start the stack: `docker compose up --build -d`.\n2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n4. For folders 7, 9, 11 and 13 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n## Good to know\n* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; when running the whole collection, set a delay of about 1500 ms between requests.\n* Each run registers a brand-new customer, so you can run it repeatedly.\n* Emails go to Mailpit (http://localhost:8025), not to real inboxes.\n* Every request's description explains how the endpoint works and how to test it.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -38,6 +38,10 @@
     {
       "key": "walletServiceUrl",
       "value": "http://localhost:8083"
+    },
+    {
+      "key": "transactionServiceUrl",
+      "value": "http://localhost:8084"
     },
     {
       "key": "password",
@@ -4722,6 +4726,1167 @@
                 "exec": [
                   "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
                   "pm.test(\"ACTIVE, 3500.00 ledger and available\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql(\"ACTIVE\"); pm.expect(b.ledgerBalance).to.eql(3500); pm.expect(b.availableBalance).to.eql(3500); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "12. Wallet funding",
+      "description": "Ask to add money to your wallet, follow it, and see the checks that refuse bad requests. Run after folders 8 to 10.",
+      "item": [
+        {
+          "name": "Note my wallet balance before funding",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "Needs a verified customer with a wallet: run folders 8, 9 and 10 first. Saves the balance as `balanceBefore`.\n\n---\n\n**View one of my wallets**\n\nShows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"balanceBefore\", pm.response.json().ledgerBalance);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add 2,500.00 to my wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "Recorded as `PENDING` with a unique reference. **No money is added yet**: the wallet is credited only after the payment is confirmed.\n\n---\n\n**Add money to my wallet**\n\nRecords a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"walletId\": \"{{walletId}}\",\n  \"amount\": 2500.0,\n  \"currency\": \"NGN\",\n  \"source\": \"BANK_TRANSFER\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"PENDING with a unique reference\", () => { pm.expect(body.status).to.eql(\"PENDING\"); pm.expect(body.reference).to.match(/^FND-[0-9A-F]{20}$/); });",
+                  "pm.test(\"Location points at the funding\", () => pm.expect(pm.response.headers.get(\"Location\")).to.include(body.reference));",
+                  "pm.collectionVariables.set(\"fundingRef\", body.reference);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My balance has not changed yet",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "**What this checks:** starting a funding does not touch the balance.\n\n---\n\n**View one of my wallets**\n\nShows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"balance unchanged\", () => pm.expect(pm.response.json().ledgerBalance).to.eql(pm.collectionVariables.get(\"balanceBefore\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "See the funding",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding/{{fundingRef}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding",
+                "{{fundingRef}}"
+              ]
+            },
+            "description": "**See how a funding is going**\n\nShows one of your fundings. **Requires a bearer token.**\n\n### How it works\n* `PENDING`: waiting for your payment to be confirmed. `PROCESSING`: payment received, crediting your wallet.\n* `SUCCESS`: your wallet has the money. `FAILED`: nothing was added to your wallet (see `failureReason`).\n* `REQUIRES_REVIEW`: something needs a person to check. Your money is not lost.\n* Another customer's funding returns **404**, the same as one that does not exist.\n\n### How to test\n1. Start a funding and view it by its `reference`: **200**, `PENDING`.\n2. An unknown reference or someone else's: **404** `FUNDING_NOT_FOUND`. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"still PENDING\", () => pm.expect(pm.response.json().status).to.eql(\"PENDING\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List my fundings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "**List my fundings**\n\nYour funding requests, newest first. **Requires a bearer token.** `limit` defaults to 20 (1 to 100).\n\n### How to test\n1. Start two fundings, then call this: both appear, newest first.\n2. A new account gets an empty list. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"my funding is listed\", () => pm.expect(pm.response.json().map(f => f.reference)).to.include(pm.collectionVariables.get(\"fundingRef\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add more than my level allows (expect 403)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "**What this checks:** the KYC level's per-transaction limit (50,000.00 NGN at level 1) is enforced, live.\n\n---\n\n**Add money to my wallet**\n\nRecords a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"walletId\": \"{{walletId}}\",\n  \"amount\": 50000.01,\n  \"currency\": \"NGN\",\n  \"source\": \"CARD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"403 Forbidden\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"error is KYC_LIMIT_EXCEEDED\", () => pm.expect(pm.response.json().error).to.eql(\"KYC_LIMIT_EXCEEDED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fund in the wrong currency (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "**Add money to my wallet**\n\nRecords a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"walletId\": \"{{walletId}}\",\n  \"amount\": 10.0,\n  \"currency\": \"USD\",\n  \"source\": \"CARD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is CURRENCY_MISMATCH\", () => pm.expect(pm.response.json().error).to.eql(\"CURRENCY_MISMATCH\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fund someone else's wallet (expect 404)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "**Add money to my wallet**\n\nRecords a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"walletId\": \"00000000-0000-0000-0000-000000000001\",\n  \"amount\": 10.0,\n  \"currency\": \"NGN\",\n  \"source\": \"CARD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 Not Found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"error is WALLET_NOT_FOUND\", () => pm.expect(pm.response.json().error).to.eql(\"WALLET_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fund with an invalid amount (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "**Add money to my wallet**\n\nRecords a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"walletId\": \"{{walletId}}\",\n  \"amount\": 0,\n  \"currency\": \"NGN\",\n  \"source\": \"CARD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400 Bad Request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error is VALIDATION_ERROR\", () => pm.expect(pm.response.json().error).to.eql(\"VALIDATION_ERROR\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fund without a token (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "**Add money to my wallet**\n\nRecords a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"walletId\": \"{{walletId}}\",\n  \"amount\": 10.0,\n  \"currency\": \"NGN\",\n  \"source\": \"CARD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "See someone else's funding (expect 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding/FND-00000000000000000000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding",
+                "FND-00000000000000000000"
+              ]
+            },
+            "description": "**See how a funding is going**\n\nShows one of your fundings. **Requires a bearer token.**\n\n### How it works\n* `PENDING`: waiting for your payment to be confirmed. `PROCESSING`: payment received, crediting your wallet.\n* `SUCCESS`: your wallet has the money. `FAILED`: nothing was added to your wallet (see `failureReason`).\n* `REQUIRES_REVIEW`: something needs a person to check. Your money is not lost.\n* Another customer's funding returns **404**, the same as one that does not exist.\n\n### How to test\n1. Start a funding and view it by its `reference`: **200**, `PENDING`.\n2. An unknown reference or someone else's: **404** `FUNDING_NOT_FOUND`. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 Not Found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"error is FUNDING_NOT_FOUND\", () => pm.expect(pm.response.json().error).to.eql(\"FUNDING_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "13. Funding confirmation (developers only)",
+      "description": "Play the payment provider: confirm, repeat, fail and mismatch a payment, and watch the wallet balance. Calls transaction-service directly; needs `internalApiKey`.",
+      "item": [
+        {
+          "name": "The provider confirms the payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{fundingRef}}/confirm",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{fundingRef}}",
+                "confirm"
+              ]
+            },
+            "description": "**Needs `internalApiKey`.** Calls transaction-service directly on port 8084. This plays the payment provider's callback for the funding from folder 12.\n\n---\n\n**The payment provider reports the payment's result**\n\nHow the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"SUCCESS\",\n  \"amount\": 2500.0,\n  \"currency\": \"NGN\",\n  \"providerReference\": \"PSK_POSTMAN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"SUCCESS after PENDING -> PROCESSING -> SUCCESS\", () => { pm.expect(body.status).to.eql(\"SUCCESS\"); pm.expect(body.history.map(h => h.to)).to.eql([\"PENDING\", \"PROCESSING\", \"SUCCESS\"]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My wallet now holds the money",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "**What this checks:** the balance went up by exactly the funded amount.\n\n---\n\n**View one of my wallets**\n\nShows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"balance is up by 2500.00 (ledger and available)\", () => { const b = pm.response.json(); const expected = pm.collectionVariables.get(\"balanceBefore\") + 2500; pm.expect(b.ledgerBalance).to.eql(expected); pm.expect(b.availableBalance).to.eql(expected); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The provider sends the same confirmation again",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{fundingRef}}/confirm",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{fundingRef}}",
+                "confirm"
+              ]
+            },
+            "description": "**What this checks:** providers retry. A repeat returns the current state and credits nothing twice.\n\n---\n\n**The payment provider reports the payment's result**\n\nHow the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"SUCCESS\",\n  \"amount\": 2500.0,\n  \"currency\": \"NGN\",\n  \"providerReference\": \"PSK_POSTMAN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"still SUCCESS\", () => pm.expect(pm.response.json().status).to.eql(\"SUCCESS\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Balance is unchanged by the repeat",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "**View one of my wallets**\n\nShows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"still up by 2500.00 only\", () => pm.expect(pm.response.json().ledgerBalance).to.eql(pm.collectionVariables.get(\"balanceBefore\") + 2500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Report failure for a funding that succeeded (expect 409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{fundingRef}}/confirm",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{fundingRef}}",
+                "confirm"
+              ]
+            },
+            "description": "**What this checks:** a SUCCESS funding can never become FAILED.\n\n---\n\n**The payment provider reports the payment's result**\n\nHow the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"FAILED\",\n  \"failureReason\": \"contradiction\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error is FUNDING_STATE_CONFLICT\", () => pm.expect(pm.response.json().error).to.eql(\"FUNDING_STATE_CONFLICT\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Start a second funding (1,000.00)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "**Add money to my wallet**\n\nRecords a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"walletId\": \"{{walletId}}\",\n  \"amount\": 1000.0,\n  \"currency\": \"NGN\",\n  \"source\": \"CARD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"failedRef\", pm.response.json().reference);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The payment fails",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{failedRef}}/confirm",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{failedRef}}",
+                "confirm"
+              ]
+            },
+            "description": "**The payment provider reports the payment's result**\n\nHow the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"FAILED\",\n  \"failureReason\": \"Card declined\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"FAILED with the reason\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql(\"FAILED\"); pm.expect(b.failureReason).to.eql(\"Card declined\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Report success for the failed funding (expect 409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{failedRef}}/confirm",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{failedRef}}",
+                "confirm"
+              ]
+            },
+            "description": "**What this checks:** a FAILED funding can never become SUCCESS, so a failure never adds spendable balance.\n\n---\n\n**The payment provider reports the payment's result**\n\nHow the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"SUCCESS\",\n  \"amount\": 1000.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 Conflict\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"error is FUNDING_ALREADY_FAILED\", () => pm.expect(pm.response.json().error).to.eql(\"FUNDING_ALREADY_FAILED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Balance is still up by 2,500.00 only",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/wallets/{{walletId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "wallets",
+                "{{walletId}}"
+              ]
+            },
+            "description": "**View one of my wallets**\n\nShows a wallet's balances and status. **Requires a bearer token.**\n\n### How it works\n* `ledgerBalance` is the recorded funds. `availableBalance` is what you can spend now; it is never more than the ledger balance.\n* `status` is `ACTIVE`, `FROZEN`, `BLOCKED` or `CLOSED`. Only an `ACTIVE` wallet can send money. A `FROZEN` wallet can still receive money; `BLOCKED` and `CLOSED` wallets cannot.\n* Another customer's wallet returns **404**, the same as one that does not exist.\n\n### How to test\n1. Open a wallet and call this with its `id`: **200**.\n2. Call it with someone else's wallet id, or a random id: **404** `WALLET_NOT_FOUND`.\n3. Without a token: **401**.\n"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"the failed funding added nothing\", () => pm.expect(pm.response.json().availableBalance).to.eql(pm.collectionVariables.get(\"balanceBefore\") + 2500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Start a third funding (900.00)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/funding",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "funding"
+              ]
+            },
+            "description": "**Add money to my wallet**\n\nRecords a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"walletId\": \"{{walletId}}\",\n  \"amount\": 900.0,\n  \"currency\": \"NGN\",\n  \"source\": \"EXTERNAL_PROVIDER\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 Created\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"reviewRef\", pm.response.json().reference);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The provider reports a different amount",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{reviewRef}}/confirm",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{reviewRef}}",
+                "confirm"
+              ]
+            },
+            "description": "**What this checks:** an amount nobody asked for is never credited. It waits for a person.\n\n---\n\n**The payment provider reports the payment's result**\n\nHow the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"SUCCESS\",\n  \"amount\": 800.0,\n  \"currency\": \"NGN\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"held for review, not credited\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql(\"REQUIRES_REVIEW\"); pm.expect(b.reviewCode).to.eql(\"AMOUNT_MISMATCH\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retry the mismatched funding (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Actor",
+                "value": "ops.jane",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{reviewRef}}/retry",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{reviewRef}}",
+                "retry"
+              ]
+            },
+            "description": "**Try again to credit a stuck or refused funding**\n\nTries again to put a confirmed payment into the wallet. **Internal only.** Needs `X-Actor`, which is kept in the audit trail.\n\n### How it works\n* Works on a `PROCESSING` funding, and on a `REQUIRES_REVIEW` one whose reason is `CREDIT_REFUSED` (for example after the wallet is unblocked).\n* It cannot retry an `AMOUNT_MISMATCH` review, or a final (`SUCCESS`/`FAILED`) funding: **422** `FUNDING_NOT_RETRYABLE`.\n* Safe to repeat: the wallet credits a funding's reference only once.\n\n### How to test (direct call, development only)\n1. Block a wallet and confirm a funding for it: `REQUIRES_REVIEW`.\n2. Reactivate the wallet and call retry with `X-Actor: ops.jane`: the funding becomes `SUCCESS` and the wallet holds the money.\n3. Retry a `SUCCESS` funding: **422**. Omit `X-Actor`: **400**.\n",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 Unprocessable Entity\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error is FUNDING_NOT_RETRYABLE\", () => pm.expect(pm.response.json().error).to.eql(\"FUNDING_NOT_RETRYABLE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Open the first funding with its history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{fundingRef}}",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{fundingRef}}"
+              ]
+            },
+            "description": "**Open a funding with its full history**\n\nShows any funding with provider details, the review reason (if any) and every state change, oldest first. **Internal only.**\n\n### How to test (direct call, development only)\n1. Call with `X-Internal-Api-Key` and a funding reference: **200**.\n2. Unknown reference: **404**. Missing key: **401**.\n",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"full audit trail\", () => { const b = pm.response.json(); pm.expect(b.history.length).to.eql(3); pm.expect(b.history.map(h => h.actor)).to.eql([\"customer\", \"provider\", \"system\"]); pm.expect(b.providerReference).to.eql(\"PSK_POSTMAN\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm without the key (expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/{{fundingRef}}/confirm",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "{{fundingRef}}",
+                "confirm"
+              ]
+            },
+            "description": "**The payment provider reports the payment's result**\n\nHow the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"FAILED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm an unknown reference (expect 404)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{transactionServiceUrl}}/internal/funding/FND-00000000000000000000/confirm",
+              "host": [
+                "{{transactionServiceUrl}}"
+              ],
+              "path": [
+                "internal",
+                "funding",
+                "FND-00000000000000000000",
+                "confirm"
+              ]
+            },
+            "description": "**The payment provider reports the payment's result**\n\nHow the payment provider (or, in development, you) tells FlowPay that a payment succeeded or failed. **Internal only.** In production this is the provider's signed callback.\n\n### How it works\n* `SUCCESS` needs the `amount` and `currency` the provider actually received. If they equal the funding's, the funding moves to `PROCESSING`, the wallet is credited, and it becomes `SUCCESS`. The wallet's money and the funding's record always agree.\n* **Different amount or currency:** nothing is credited. The funding becomes `REQUIRES_REVIEW` (`AMOUNT_MISMATCH`) so a person can decide.\n* `FAILED` marks the funding `FAILED`. The wallet is never touched, so the spendable balance does not go up.\n* **The wallet service is down:** the payment is still recorded and the funding stays `PROCESSING`. A background job finishes it as soon as the wallet service is back. No money is lost or credited twice.\n* **The wallet refuses the money** (for example it was blocked or closed): `REQUIRES_REVIEW` (`CREDIT_REFUSED`).\n* **Repeats are safe.** Sending the same confirmation again returns the current state and moves nothing twice. A `FAILED` funding can never become `SUCCESS`, and a `SUCCESS` one can never become `FAILED`.\n\n### How to test (direct call, development only)\n1. Start a funding, then confirm with `{\"outcome\":\"SUCCESS\",\"amount\":5000.00,\"currency\":\"NGN\",\"providerReference\":\"PSK_1\"}`: **200**, `SUCCESS`; the wallet now holds the money.\n2. Send the same confirmation again: **200**, still `SUCCESS`, balance unchanged.\n3. Start another and confirm `{\"outcome\":\"FAILED\",\"failureReason\":\"Insufficient funds\"}`: `FAILED`, wallet unchanged. Then try `SUCCESS` on it: **409** `FUNDING_ALREADY_FAILED`.\n4. Confirm a funding for `4000.00` when `5000.00` was requested: `REQUIRES_REVIEW`, wallet unchanged.\n5. `SUCCESS` without `amount`/`currency`: **400**. Unknown reference: **404**.\n",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"FAILED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404 Not Found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"error is FUNDING_NOT_FOUND\", () => pm.expect(pm.response.json().error).to.eql(\"FUNDING_NOT_FOUND\"));"
                 ]
               }
             }

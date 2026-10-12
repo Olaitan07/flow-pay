@@ -11,7 +11,7 @@ documentation always comes from the annotations in the code, then writes:
   services/api-gateway/src/main/resources/static/openapi/*.json   served by the gateway's Swagger UI
 
 Usage: python3 scripts/build-api-docs.py
-Override service URLs with USER_URL, AUTH_URL, NOTIFICATION_URL, KYC_URL, WALLET_URL if you changed the ports.
+Override service URLs with USER_URL, AUTH_URL, NOTIFICATION_URL, KYC_URL, WALLET_URL, TRANSACTION_URL if you changed the ports.
 """
 import json
 import os
@@ -28,6 +28,7 @@ AUTH_URL = os.environ.get("AUTH_URL", "http://localhost:8081")
 NOTIFICATION_URL = os.environ.get("NOTIFICATION_URL", "http://localhost:8086")
 KYC_URL = os.environ.get("KYC_URL", "http://localhost:8087")
 WALLET_URL = os.environ.get("WALLET_URL", "http://localhost:8083")
+TRANSACTION_URL = os.environ.get("TRANSACTION_URL", "http://localhost:8084")
 GATEWAY_URL = "http://localhost:8080"
 
 
@@ -56,6 +57,7 @@ FlowPay is a digital wallet platform. This is the **public API**, reached throug
 4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`
 5. **Verify your identity** - `GET /api/v1/kyc`, then `POST /api/v1/kyc/tiers/1` and `/tiers/2`. Your verification level decides what you may do with money.
 6. **Open a wallet** - `POST /api/v1/wallets` (needs KYC level 1), then `GET /api/v1/wallets` to see your balances.
+7. **Add money** - `POST /api/v1/funding`, then follow it with `GET /api/v1/funding/{reference}`. Your wallet is credited once the payment is confirmed.
 
 ## How security works
 * Only registration, login, refresh, logout, password reset and the health check are public.
@@ -71,18 +73,18 @@ Password reset and two-step verification send real emails to a local inbox (Mail
 
 INTERNAL_OVERVIEW = """\
 Service-to-service endpoints. They are **not** reachable through the gateway: call the services directly
-(auth-service on port 8081, notification-service on port 8086, kyc-service on port 8087, wallet-service on port 8083) with the `X-Internal-Api-Key` header
+(auth-service on port 8081, notification-service on port 8086, kyc-service on port 8087, wallet-service on port 8083, transaction-service on port 8084) with the `X-Internal-Api-Key` header
 (`INTERNAL_API_KEY` from your `.env`). Intended for development and debugging only.
 """
 
 
-def merge_specs(user, auth, notification, kyc, wallet):
+def merge_specs(user, auth, notification, kyc, wallet, transaction):
     public_paths, internal_paths = {}, {}
     schemas, tags = {}, {}
 
     for name, spec, base in (("user", user, USER_URL), ("auth", auth, AUTH_URL),
                              ("notification", notification, NOTIFICATION_URL), ("kyc", kyc, KYC_URL),
-                             ("wallet", wallet, WALLET_URL)):
+                             ("wallet", wallet, WALLET_URL), ("transaction", transaction, TRANSACTION_URL)):
         for path, item in spec["paths"].items():
             if path.startswith("/internal"):
                 item = dict(item)
@@ -573,6 +575,93 @@ def build_requests():
         tests=js(STATUS(401, "Unauthorized"))))
     R.append(request(F11, "My wallet now shows 3,500.00 (through the gateway)", "viewWallet", url="{{baseUrl}}/api/v1/wallets/{{walletId}}",
         tests=js(STATUS(200, "OK"), 'pm.test("ACTIVE, 3500.00 ledger and available", () => { const b = pm.response.json(); pm.expect(b.status).to.eql("ACTIVE"); pm.expect(b.ledgerBalance).to.eql(3500); pm.expect(b.availableBalance).to.eql(3500); });')))
+    F12 = "12. Wallet funding"
+    R.append(request(F12, "Note my wallet balance before funding", "viewWallet", url="{{baseUrl}}/api/v1/wallets/{{walletId}}",
+        note="Needs a verified customer with a wallet: run folders 8, 9 and 10 first. Saves the balance as `balanceBefore`.",
+        tests=js(STATUS(200, "OK"), SAVE("balanceBefore", "pm.response.json().ledgerBalance"))))
+    R.append(request(F12, "Add 2,500.00 to my wallet", "startFunding",
+        body={"walletId": "{{walletId}}", "amount": 2500.00, "currency": "NGN", "source": "BANK_TRANSFER"},
+        note="Recorded as `PENDING` with a unique reference. **No money is added yet**: the wallet is credited only after the payment is confirmed.",
+        tests=js(STATUS(201, "Created"), "const body = pm.response.json();",
+                 'pm.test("PENDING with a unique reference", () => { pm.expect(body.status).to.eql("PENDING"); pm.expect(body.reference).to.match(/^FND-[0-9A-F]{20}$/); });',
+                 'pm.test("Location points at the funding", () => pm.expect(pm.response.headers.get("Location")).to.include(body.reference));',
+                 SAVE("fundingRef", "body.reference"))))
+    R.append(request(F12, "My balance has not changed yet", "viewWallet", url="{{baseUrl}}/api/v1/wallets/{{walletId}}",
+        note="**What this checks:** starting a funding does not touch the balance.",
+        tests=js(STATUS(200, "OK"), 'pm.test("balance unchanged", () => pm.expect(pm.response.json().ledgerBalance).to.eql(pm.collectionVariables.get("balanceBefore")));')))
+    R.append(request(F12, "See the funding", "viewFunding", url="{{baseUrl}}/api/v1/funding/{{fundingRef}}",
+        tests=js(STATUS(200, "OK"), 'pm.test("still PENDING", () => pm.expect(pm.response.json().status).to.eql("PENDING"));')))
+    R.append(request(F12, "List my fundings", "listMyFundings",
+        tests=js(STATUS(200, "OK"), 'pm.test("my funding is listed", () => pm.expect(pm.response.json().map(f => f.reference)).to.include(pm.collectionVariables.get("fundingRef")));')))
+    R.append(request(F12, "Add more than my level allows (expect 403)", "startFunding",
+        body={"walletId": "{{walletId}}", "amount": 50000.01, "currency": "NGN", "source": "CARD"},
+        note="**What this checks:** the KYC level's per-transaction limit (50,000.00 NGN at level 1) is enforced, live.",
+        tests=js(STATUS(403, "Forbidden"), 'pm.test("error is KYC_LIMIT_EXCEEDED", () => pm.expect(pm.response.json().error).to.eql("KYC_LIMIT_EXCEEDED"));')))
+    R.append(request(F12, "Fund in the wrong currency (expect 422)", "startFunding",
+        body={"walletId": "{{walletId}}", "amount": 10.00, "currency": "USD", "source": "CARD"},
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is CURRENCY_MISMATCH", () => pm.expect(pm.response.json().error).to.eql("CURRENCY_MISMATCH"));')))
+    R.append(request(F12, "Fund someone else's wallet (expect 404)", "startFunding",
+        body={"walletId": "00000000-0000-0000-0000-000000000001", "amount": 10.00, "currency": "NGN", "source": "CARD"},
+        tests=js(STATUS(404, "Not Found"), 'pm.test("error is WALLET_NOT_FOUND", () => pm.expect(pm.response.json().error).to.eql("WALLET_NOT_FOUND"));')))
+    R.append(request(F12, "Fund with an invalid amount (expect 400)", "startFunding",
+        body={"walletId": "{{walletId}}", "amount": 0, "currency": "NGN", "source": "CARD"},
+        tests=js(STATUS(400, "Bad Request"), 'pm.test("error is VALIDATION_ERROR", () => pm.expect(pm.response.json().error).to.eql("VALIDATION_ERROR"));')))
+    R.append(request(F12, "Fund without a token (expect 401)", "startFunding", auth="none",
+        body={"walletId": "{{walletId}}", "amount": 10.00, "currency": "NGN", "source": "CARD"},
+        tests=js(STATUS(401, "Unauthorized"))))
+    R.append(request(F12, "See someone else's funding (expect 404)", "viewFunding", url="{{baseUrl}}/api/v1/funding/FND-00000000000000000000",
+        tests=js(STATUS(404, "Not Found"), 'pm.test("error is FUNDING_NOT_FOUND", () => pm.expect(pm.response.json().error).to.eql("FUNDING_NOT_FOUND"));')))
+
+    F13 = "13. Funding confirmation (developers only)"
+    key = [("X-Internal-Api-Key", "{{internalApiKey}}")]
+    ops = key + [("X-Actor", "ops.jane")]
+    CONFIRM = "{{transactionServiceUrl}}/internal/funding/"
+    R.append(request(F13, "The provider confirms the payment", "confirmFunding", url=CONFIRM + "{{fundingRef}}/confirm", auth="none", headers=key,
+        body={"outcome": "SUCCESS", "amount": 2500.00, "currency": "NGN", "providerReference": "PSK_POSTMAN"},
+        note="**Needs `internalApiKey`.** Calls transaction-service directly on port 8084. This plays the payment provider's callback for the funding from folder 12.",
+        tests=js(STATUS(200, "OK"), "const body = pm.response.json();",
+                 'pm.test("SUCCESS after PENDING -> PROCESSING -> SUCCESS", () => { pm.expect(body.status).to.eql("SUCCESS"); pm.expect(body.history.map(h => h.to)).to.eql(["PENDING", "PROCESSING", "SUCCESS"]); });')))
+    R.append(request(F13, "My wallet now holds the money", "viewWallet", url="{{baseUrl}}/api/v1/wallets/{{walletId}}",
+        note="**What this checks:** the balance went up by exactly the funded amount.",
+        tests=js(STATUS(200, "OK"), 'pm.test("balance is up by 2500.00 (ledger and available)", () => { const b = pm.response.json(); const expected = pm.collectionVariables.get("balanceBefore") + 2500; pm.expect(b.ledgerBalance).to.eql(expected); pm.expect(b.availableBalance).to.eql(expected); });')))
+    R.append(request(F13, "The provider sends the same confirmation again", "confirmFunding", url=CONFIRM + "{{fundingRef}}/confirm", auth="none", headers=key,
+        body={"outcome": "SUCCESS", "amount": 2500.00, "currency": "NGN", "providerReference": "PSK_POSTMAN"},
+        note="**What this checks:** providers retry. A repeat returns the current state and credits nothing twice.",
+        tests=js(STATUS(200, "OK"), 'pm.test("still SUCCESS", () => pm.expect(pm.response.json().status).to.eql("SUCCESS"));')))
+    R.append(request(F13, "Balance is unchanged by the repeat", "viewWallet", url="{{baseUrl}}/api/v1/wallets/{{walletId}}",
+        tests=js(STATUS(200, "OK"), 'pm.test("still up by 2500.00 only", () => pm.expect(pm.response.json().ledgerBalance).to.eql(pm.collectionVariables.get("balanceBefore") + 2500));')))
+    R.append(request(F13, "Report failure for a funding that succeeded (expect 409)", "confirmFunding", url=CONFIRM + "{{fundingRef}}/confirm", auth="none", headers=key,
+        body={"outcome": "FAILED", "failureReason": "contradiction"},
+        note="**What this checks:** a SUCCESS funding can never become FAILED.",
+        tests=js(STATUS(409, "Conflict"), 'pm.test("error is FUNDING_STATE_CONFLICT", () => pm.expect(pm.response.json().error).to.eql("FUNDING_STATE_CONFLICT"));')))
+    R.append(request(F13, "Start a second funding (1,000.00)", "startFunding",
+        body={"walletId": "{{walletId}}", "amount": 1000.00, "currency": "NGN", "source": "CARD"},
+        tests=js(STATUS(201, "Created"), SAVE("failedRef", "pm.response.json().reference"))))
+    R.append(request(F13, "The payment fails", "confirmFunding", url=CONFIRM + "{{failedRef}}/confirm", auth="none", headers=key,
+        body={"outcome": "FAILED", "failureReason": "Card declined"},
+        tests=js(STATUS(200, "OK"), 'pm.test("FAILED with the reason", () => { const b = pm.response.json(); pm.expect(b.status).to.eql("FAILED"); pm.expect(b.failureReason).to.eql("Card declined"); });')))
+    R.append(request(F13, "Report success for the failed funding (expect 409)", "confirmFunding", url=CONFIRM + "{{failedRef}}/confirm", auth="none", headers=key,
+        body={"outcome": "SUCCESS", "amount": 1000.00, "currency": "NGN"},
+        note="**What this checks:** a FAILED funding can never become SUCCESS, so a failure never adds spendable balance.",
+        tests=js(STATUS(409, "Conflict"), 'pm.test("error is FUNDING_ALREADY_FAILED", () => pm.expect(pm.response.json().error).to.eql("FUNDING_ALREADY_FAILED"));')))
+    R.append(request(F13, "Balance is still up by 2,500.00 only", "viewWallet", url="{{baseUrl}}/api/v1/wallets/{{walletId}}",
+        tests=js(STATUS(200, "OK"), 'pm.test("the failed funding added nothing", () => pm.expect(pm.response.json().availableBalance).to.eql(pm.collectionVariables.get("balanceBefore") + 2500));')))
+    R.append(request(F13, "Start a third funding (900.00)", "startFunding",
+        body={"walletId": "{{walletId}}", "amount": 900.00, "currency": "NGN", "source": "EXTERNAL_PROVIDER"},
+        tests=js(STATUS(201, "Created"), SAVE("reviewRef", "pm.response.json().reference"))))
+    R.append(request(F13, "The provider reports a different amount", "confirmFunding", url=CONFIRM + "{{reviewRef}}/confirm", auth="none", headers=key,
+        body={"outcome": "SUCCESS", "amount": 800.00, "currency": "NGN"},
+        note="**What this checks:** an amount nobody asked for is never credited. It waits for a person.",
+        tests=js(STATUS(200, "OK"), 'pm.test("held for review, not credited", () => { const b = pm.response.json(); pm.expect(b.status).to.eql("REQUIRES_REVIEW"); pm.expect(b.reviewCode).to.eql("AMOUNT_MISMATCH"); });')))
+    R.append(request(F13, "Retry the mismatched funding (expect 422)", "retryFunding", url=CONFIRM + "{{reviewRef}}/retry", auth="none", headers=ops,
+        tests=js(STATUS(422, "Unprocessable Entity"), 'pm.test("error is FUNDING_NOT_RETRYABLE", () => pm.expect(pm.response.json().error).to.eql("FUNDING_NOT_RETRYABLE"));')))
+    R.append(request(F13, "Open the first funding with its history", "getFundingForOperations", url=CONFIRM + "{{fundingRef}}", auth="none", headers=key,
+        tests=js(STATUS(200, "OK"), 'pm.test("full audit trail", () => { const b = pm.response.json(); pm.expect(b.history.length).to.eql(3); pm.expect(b.history.map(h => h.actor)).to.eql(["customer", "provider", "system"]); pm.expect(b.providerReference).to.eql("PSK_POSTMAN"); });')))
+    R.append(request(F13, "Confirm without the key (expect 401)", "confirmFunding", url=CONFIRM + "{{fundingRef}}/confirm", auth="none",
+        body={"outcome": "FAILED"}, tests=js(STATUS(401, "Unauthorized"))))
+    R.append(request(F13, "Confirm an unknown reference (expect 404)", "confirmFunding", url=CONFIRM + "FND-00000000000000000000/confirm", auth="none", headers=key,
+        body={"outcome": "FAILED"},
+        tests=js(STATUS(404, "Not Found"), 'pm.test("error is FUNDING_NOT_FOUND", () => pm.expect(pm.response.json().error).to.eql("FUNDING_NOT_FOUND"));')))
     return R
 
 
@@ -621,6 +710,8 @@ def build_collection(ops):
         "8. Identity verification (KYC)": "Check your verification level and submit tier 1. Through the gateway with your bearer token.",
         "9. KYC review and enforcement (developers only)": "Approve the tier 1 submission as a reviewer, then see how the level changes what is allowed. Calls kyc-service directly; needs `internalApiKey`.",
         "10. Wallets": "Open a wallet once verified, list and view your wallets. Run after folders 8 and 9 (they verify this customer).",
+        "12. Wallet funding": "Ask to add money to your wallet, follow it, and see the checks that refuse bad requests. Run after folders 8 to 10.",
+        "13. Funding confirmation (developers only)": "Play the payment provider: confirm, repeat, fail and mismatch a payment, and watch the wallet balance. Calls transaction-service directly; needs `internalApiKey`.",
         "11. Wallet rules (developers only)": "Put money in and take it out, retries, overspending, and the freeze / block / close rules. Calls wallet-service directly; needs `internalApiKey`.",
     }
     collection = {
@@ -632,7 +723,7 @@ def build_collection(ops):
                            "2. Import this collection **and** `flowpay-local.postman_environment.json`, then select the *FlowPay - Local* environment.\n"
                            "3. Run the folders **in order** (right-click the collection -> Run), or click requests one by one. "
                            "Each request has tests; tokens, ids and emailed codes are captured automatically into collection variables.\n"
-                           "4. For folders 7, 9 and 11 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n"
+                           "4. For folders 7, 9, 11 and 13 set `internalApiKey` in the environment to `INTERNAL_API_KEY` from your `.env`.\n\n"
                            "## Good to know\n"
                            "* Rate limits apply (for example 5 registrations and 10 logins per minute per IP). If you get `429`, wait 60 seconds; "
                            "when running the whole collection, set a delay of about 1500 ms between requests.\n"
@@ -649,6 +740,7 @@ def build_collection(ops):
             {"key": "notificationServiceUrl", "value": "http://localhost:8086"},
             {"key": "kycServiceUrl", "value": "http://localhost:8087"},
             {"key": "walletServiceUrl", "value": "http://localhost:8083"},
+            {"key": "transactionServiceUrl", "value": "http://localhost:8084"},
             {"key": "password", "value": "Sup3rSecret"},
             {"key": "newPassword", "value": "Brand9NewPass"},
         ],
@@ -668,6 +760,7 @@ def build_environment():
             {"key": "notificationServiceUrl", "value": "http://localhost:8086", "type": "default", "enabled": True},
             {"key": "kycServiceUrl", "value": "http://localhost:8087", "type": "default", "enabled": True},
             {"key": "walletServiceUrl", "value": "http://localhost:8083", "type": "default", "enabled": True},
+            {"key": "transactionServiceUrl", "value": "http://localhost:8084", "type": "default", "enabled": True},
             {"key": "internalApiKey", "value": "", "type": "secret", "enabled": True},
         ],
         "_postman_variable_scope": "environment",
@@ -675,9 +768,9 @@ def build_environment():
 
 
 def main():
-    user, auth, notification, kyc, wallet = (fetch(USER_URL), fetch(AUTH_URL), fetch(NOTIFICATION_URL), fetch(KYC_URL),
-                                             fetch(WALLET_URL))
-    public, internal = merge_specs(user, auth, notification, kyc, wallet)
+    user, auth, notification, kyc, wallet, transaction = (fetch(USER_URL), fetch(AUTH_URL), fetch(NOTIFICATION_URL),
+                                                          fetch(KYC_URL), fetch(WALLET_URL), fetch(TRANSACTION_URL))
+    public, internal = merge_specs(user, auth, notification, kyc, wallet, transaction)
     ops = operations(public, internal)
 
     dump(os.path.join(DOCS, "flowpay-openapi.json"), public)

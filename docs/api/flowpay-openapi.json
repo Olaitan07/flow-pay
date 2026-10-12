@@ -3,7 +3,7 @@
   "info": {
     "title": "FlowPay API",
     "version": "v1",
-    "description": "FlowPay is a digital wallet platform. This is the **public API**, reached through the gateway at\n`http://localhost:8080`.\n\n## Quick start\n1. **Register** - `POST /api/v1/users`\n2. **Log in** - `POST /api/v1/auth/login` -> copy the `accessToken`\n3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.\n4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`\n5. **Verify your identity** - `GET /api/v1/kyc`, then `POST /api/v1/kyc/tiers/1` and `/tiers/2`. Your verification level decides what you may do with money.\n6. **Open a wallet** - `POST /api/v1/wallets` (needs KYC level 1), then `GET /api/v1/wallets` to see your balances.\n\n## How security works\n* Only registration, login, refresh, logout, password reset and the health check are public.\n* Everything else needs `Authorization: Bearer <accessToken>`. Tokens are JWTs signed with RS256 and last 15 minutes;\n  renew them with `POST /api/v1/auth/refresh` (refresh tokens are single use).\n* You only ever see and change **your own** data. Another customer's id returns `404`.\n* Several endpoints are rate limited per IP address and return `429` with a `Retry-After` header when exceeded.\n* Every error has the same shape: `{timestamp, status, error, message, path}`. Branch on `error`, not `message`.\n\n## Emails in development\nPassword reset and two-step verification send real emails to a local inbox (Mailpit): http://localhost:8025.\n"
+    "description": "FlowPay is a digital wallet platform. This is the **public API**, reached through the gateway at\n`http://localhost:8080`.\n\n## Quick start\n1. **Register** - `POST /api/v1/users`\n2. **Log in** - `POST /api/v1/auth/login` -> copy the `accessToken`\n3. Click **Authorize** (top right) and paste the token. Protected endpoints (padlock icon) now work.\n4. **View / update your profile** - `GET` / `PATCH /api/v1/users/{id}`\n5. **Verify your identity** - `GET /api/v1/kyc`, then `POST /api/v1/kyc/tiers/1` and `/tiers/2`. Your verification level decides what you may do with money.\n6. **Open a wallet** - `POST /api/v1/wallets` (needs KYC level 1), then `GET /api/v1/wallets` to see your balances.\n7. **Add money** - `POST /api/v1/funding`, then follow it with `GET /api/v1/funding/{reference}`. Your wallet is credited once the payment is confirmed.\n\n## How security works\n* Only registration, login, refresh, logout, password reset and the health check are public.\n* Everything else needs `Authorization: Bearer <accessToken>`. Tokens are JWTs signed with RS256 and last 15 minutes;\n  renew them with `POST /api/v1/auth/refresh` (refresh tokens are single use).\n* You only ever see and change **your own** data. Another customer's id returns `404`.\n* Several endpoints are rate limited per IP address and return `429` with a `Retry-After` header when exceeded.\n* Every error has the same shape: `{timestamp, status, error, message, path}`. Branch on `error`, not `message`.\n\n## Emails in development\nPassword reset and two-step verification send real emails to a local inbox (Mailpit): http://localhost:8025.\n"
   },
   "servers": [
     {
@@ -35,6 +35,10 @@
     {
       "name": "6. Wallets",
       "description": "Hold your money in a wallet. You need a verified identity (KYC level 1) to open one. All calls need a bearer token and only ever touch your own wallets."
+    },
+    {
+      "name": "7. Wallet funding",
+      "description": "Add money to your wallet. You ask to fund it, pay through the chosen source, and your wallet is credited once the payment is confirmed. All calls need a bearer token and only ever touch your own fundings."
     }
   ],
   "paths": {
@@ -548,6 +552,210 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/funding": {
+      "get": {
+        "tags": [
+          "7. Wallet funding"
+        ],
+        "summary": "List my fundings",
+        "description": "Your funding requests, newest first. **Requires a bearer token.** `limit` defaults to 20 (1 to 100).\n\n### How to test\n1. Start two fundings, then call this: both appear, newest first.\n2. A new account gets an empty list. Without a token: **401**.\n",
+        "operationId": "listMyFundings",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Your fundings (possibly none).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FundingResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "7. Wallet funding"
+        ],
+        "summary": "Add money to my wallet",
+        "description": "Records a request to add money to one of your wallets and gives you a unique `reference`. **Requires a bearer token.**\n\n### How it works\n* This call **does not add money**. It creates the funding as `PENDING`. Your wallet is credited only after the payment is confirmed.\n* The wallet must be yours, in the same currency, and able to receive money (not `BLOCKED` or `CLOSED`).\n* Your verification level must allow it: funding needs KYC level 1, and the amount must be within your level's limit. This is checked live every time.\n* `source` is `BANK_TRANSFER`, `CARD` or `EXTERNAL_PROVIDER`.\n* Follow the funding with `GET /api/v1/funding/{reference}`. Statuses: `PENDING`, `PROCESSING`, `SUCCESS` (money is in your wallet), `FAILED` (nothing was added), `REQUIRES_REVIEW` (our team is checking; your money is safe).\n\n### How to test\n1. Open a wallet and make sure you are verified to level 1.\n2. Call this with your `walletId`, `{\"amount\":5000.00,\"currency\":\"NGN\",\"source\":\"BANK_TRANSFER\"}`: **201**, status `PENDING`, with a `Location` header. Your wallet balance has **not** changed.\n3. Complete the payment with the internal confirm endpoint (it plays the payment provider), then view the funding: `SUCCESS`, and the wallet shows the money.\n4. Try someone else's wallet id: **404**. Wrong currency: **422** `CURRENCY_MISMATCH`.\n5. Try an amount above your level's limit: **403** `KYC_LIMIT_EXCEEDED`. While unverified: **403** `KYC_LEVEL_TOO_LOW`.\n6. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+        "operationId": "startFunding",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitiateFundingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The funding was recorded as PENDING.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR or MALFORMED_REQUEST.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "KYC_LEVEL_TOO_LOW or KYC_LIMIT_EXCEEDED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALLET_NOT_FOUND (or it belongs to someone else).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "CURRENCY_MISMATCH or WALLET_NOT_ACCEPTING_FUNDS.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "WALLET_UNAVAILABLE or KYC_UNAVAILABLE: a check could not be made; nothing was recorded.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/funding/{reference}": {
+      "get": {
+        "tags": [
+          "7. Wallet funding"
+        ],
+        "summary": "See how a funding is going",
+        "description": "Shows one of your fundings. **Requires a bearer token.**\n\n### How it works\n* `PENDING`: waiting for your payment to be confirmed. `PROCESSING`: payment received, crediting your wallet.\n* `SUCCESS`: your wallet has the money. `FAILED`: nothing was added to your wallet (see `failureReason`).\n* `REQUIRES_REVIEW`: something needs a person to check. Your money is not lost.\n* Another customer's funding returns **404**, the same as one that does not exist.\n\n### How to test\n1. Start a funding and view it by its `reference`: **200**, `PENDING`.\n2. An unknown reference or someone else's: **404** `FUNDING_NOT_FOUND`. Without a token: **401**.\n",
+        "operationId": "viewFunding",
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The funding.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FundingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "FUNDING_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/kyc": {
@@ -1406,6 +1614,106 @@
             "example": "/api/v1/users"
           }
         }
+      },
+      "FundingResponse": {
+        "type": "object",
+        "description": "A request to add money to a wallet, and how it is going.",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "description": "Unique reference. Quote it when paying and when contacting support.",
+            "example": "FND-9F3A91C2B7D04E1A8C55"
+          },
+          "walletId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amount": {
+            "type": "number",
+            "example": 5000.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "BANK_TRANSFER",
+              "CARD",
+              "EXTERNAL_PROVIDER"
+            ],
+            "example": "BANK_TRANSFER"
+          },
+          "status": {
+            "type": "string",
+            "description": "PENDING (waiting for the payment), PROCESSING (payment received, crediting your wallet), SUCCESS (your wallet has the money), FAILED (nothing was added), REQUIRES_REVIEW (our team is checking).",
+            "enum": [
+              "PENDING",
+              "PROCESSING",
+              "SUCCESS",
+              "FAILED",
+              "REQUIRES_REVIEW"
+            ],
+            "example": "PENDING"
+          },
+          "failureReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed, when status is FAILED."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "InitiateFundingRequest": {
+        "type": "object",
+        "description": "Ask to add money to one of your wallets.",
+        "properties": {
+          "walletId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The wallet to fund. It must be yours.",
+            "example": "9636018a-2f90-46a7-add3-2549b9841b5f"
+          },
+          "amount": {
+            "type": "number",
+            "description": "Amount, more than zero, at most 2 decimal places. Money is never a floating-point number.",
+            "example": 5000.0,
+            "minimum": 0.01
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency. Must equal the wallet's currency; never assumed.",
+            "example": "NGN",
+            "minLength": 1,
+            "pattern": "^[A-Z]{3}$"
+          },
+          "source": {
+            "type": "string",
+            "description": "Where the money comes from.",
+            "enum": [
+              "BANK_TRANSFER",
+              "CARD",
+              "EXTERNAL_PROVIDER"
+            ],
+            "example": "BANK_TRANSFER"
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "source",
+          "walletId"
+        ]
       },
       "KycStatusResponse": {
         "type": "object",
