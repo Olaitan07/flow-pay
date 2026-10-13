@@ -822,6 +822,193 @@
         }
       ]
     },
+    "/internal/wallets/by-customer/{customerId}": {
+      "get": {
+        "tags": [
+          "Internal: wallets"
+        ],
+        "summary": "Find a customer's wallet in a currency",
+        "description": "Returns the customer's live (not closed) wallet in one currency. **Internal only.** Transfers use it to find the recipient's wallet from their customer id.\n\n### How to test (direct call, development only)\n1. Open a wallet for a customer, then call this with their `customerId` and `currency=NGN`: **200** with the wallet.\n2. A customer with no wallet in that currency, or a closed one: **404** `WALLET_NOT_FOUND`.\n",
+        "operationId": "findWalletByCustomer",
+        "parameters": [
+          {
+            "name": "customerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "currency",
+            "in": "query",
+            "description": "ISO 4217 currency.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "NGN"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The wallet.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALLET_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8083",
+          "description": "wallet-service (direct)"
+        }
+      ]
+    },
+    "/internal/wallets/transfer": {
+      "post": {
+        "tags": [
+          "Internal: wallets"
+        ],
+        "summary": "Move money between two wallets, with a fee, atomically",
+        "description": "Takes `amount + fee` from the sender, gives `amount` to the recipient and `fee` to the platform fee wallet, as **one all-or-nothing step**. **Internal only.** Customers never call it; the transaction service does after it has checked the customer, KYC and fee.\n\n### How it works\n* All three changes happen in one database transaction. If any fails (not enough money, wallet not active, recipient cannot receive) **none** happen.\n* The sender wallet must be `ACTIVE` with enough **available** balance for `amount + fee`. The recipient may be `ACTIVE` or `FROZEN`. Both wallets must hold the request's currency.\n* `reference` makes a retry safe: the same reference with the same details returns the first result (**200**) and moves nothing again; different details are **409** `REFERENCE_REUSED`.\n* The fee wallet is created on first use. A fee of `0` skips it.\n\n### How to test (direct call, development only)\n1. Credit wallet A with `50000.00`. Transfer `10000.00` with fee `100.00` to wallet B: **201**. A has `39900.00`, B `10000.00`, the fee wallet `100.00`.\n2. Repeat exactly: **200**, balances unchanged.\n3. Transfer more than A holds: **422** `INSUFFICIENT_FUNDS`, and nobody's balance changed. Exactly `amount` with no room for the fee fails the same way.\n4. Freeze A: **422** `WALLET_NOT_ACTIVE`. Block B: **422** `RECIPIENT_NOT_ACCEPTING_FUNDS`, and A is **not** debited.\n5. Same wallet for both: **422** `SAME_WALLET`. Amount `0`, negative or with more than 2 decimals: **400**.\n",
+        "operationId": "transferBetweenWallets",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WalletTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Transfer done.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletTransferResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A repeat of an earlier identical request; nothing moved again.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletTransferResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Internal-Api-Key.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SENDER_WALLET_NOT_FOUND or RECIPIENT_WALLET_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "REFERENCE_REUSED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "INSUFFICIENT_FUNDS, WALLET_NOT_ACTIVE, RECIPIENT_NOT_ACCEPTING_FUNDS, CURRENCY_MISMATCH or SAME_WALLET.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "FEE_WALLET_UNAVAILABLE: nothing moved; safe to retry with the same reference.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "internalApiKey": []
+          }
+        ]
+      },
+      "servers": [
+        {
+          "url": "http://localhost:8083",
+          "description": "wallet-service (direct)"
+        }
+      ]
+    },
     "/internal/wallets/{id}": {
       "get": {
         "tags": [
@@ -2019,6 +2206,79 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "WalletTransferRequest": {
+        "type": "object",
+        "description": "Move money from one wallet to another, with a fee, as one all-or-nothing step.",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "description": "Unique reference for the whole transfer. Repeating it with the same details returns the original result and moves nothing again. The three movements use it with :DEBIT, :CREDIT and :FEE added.",
+            "example": "TRF-9F3A91C2B7D04E1A8C55",
+            "maxLength": 90,
+            "minLength": 0,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "senderWalletId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The wallet money is taken from."
+          },
+          "recipientWalletId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The wallet that receives the amount."
+          },
+          "amount": {
+            "type": "number",
+            "description": "What the recipient receives. More than zero, at most 2 decimal places.",
+            "example": 10000.0,
+            "minimum": 0.01
+          },
+          "fee": {
+            "type": "number",
+            "description": "The fee, paid to the platform. Zero or more. The sender pays amount + fee.",
+            "example": 100.0,
+            "minimum": 0.0
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency. Must equal both wallets' currency.",
+            "example": "NGN",
+            "minLength": 1,
+            "pattern": "^[A-Z]{3}$"
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "fee",
+          "recipientWalletId",
+          "reference",
+          "senderWalletId"
+        ]
+      },
+      "WalletTransferResponse": {
+        "type": "object",
+        "description": "The three balance changes of one transfer. All of them happened, or none did.",
+        "properties": {
+          "reference": {
+            "type": "string"
+          },
+          "debit": {
+            "$ref": "#/components/schemas/MovementResponse",
+            "description": "Taken from the sender: amount + fee."
+          },
+          "credit": {
+            "$ref": "#/components/schemas/MovementResponse",
+            "description": "Given to the recipient: the amount."
+          },
+          "fee": {
+            "type": "null",
+            "$ref": "#/components/schemas/MovementResponse",
+            "description": "Given to the platform fee wallet. Absent when the fee is zero."
           }
         }
       }
