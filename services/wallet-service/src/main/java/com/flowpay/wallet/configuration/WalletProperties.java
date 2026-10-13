@@ -2,6 +2,7 @@ package com.flowpay.wallet.configuration;
 
 import java.time.Duration;
 import java.util.Set;
+import java.util.UUID;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -9,11 +10,16 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record WalletProperties(
         /* Currencies a wallet may be opened in. Anything else is refused. */
         @DefaultValue("NGN") Set<String> supportedCurrencies,
+        /* The platform's own customer id. Its wallet receives the fees charged on transfers. */
+        @DefaultValue("00000000-0000-0000-0000-0000000000fe") UUID feeCustomerId,
         Kyc kyc) {
 
     public WalletProperties {
         if (kyc == null) {
             kyc = new Kyc(null, 1, null, null);
+        }
+        if (feeCustomerId == null) {
+            feeCustomerId = UUID.fromString("00000000-0000-0000-0000-0000000000fe");
         }
     }
 

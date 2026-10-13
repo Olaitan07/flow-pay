@@ -4,6 +4,7 @@ import com.flowpay.wallet.client.KycClient;
 import com.flowpay.wallet.configuration.WalletProperties;
 import com.flowpay.wallet.dto.response.WalletResponse;
 import com.flowpay.wallet.entity.Wallet;
+import com.flowpay.wallet.entity.WalletStatus;
 import com.flowpay.wallet.exception.WalletException;
 import com.flowpay.wallet.repository.WalletRepository;
 import java.time.Clock;
@@ -71,6 +72,13 @@ public class WalletService {
     public WalletResponse getFor(UUID customerId, UUID walletId) {
         return wallets.findByIdAndCustomerId(walletId, customerId).map(WalletResponse::from)
                 .orElseThrow(WalletException::notFound);
+    }
+
+    /** For other FlowPay services: the customer's live wallet in a currency. Not exposed to customers. */
+    @Transactional(readOnly = true)
+    public WalletResponse liveWalletOf(UUID customerId, String currency) {
+        return wallets.findFirstByCustomerIdAndCurrencyAndStatusNot(customerId, currency, WalletStatus.CLOSED)
+                .map(WalletResponse::from).orElseThrow(WalletException::notFound);
     }
 
     private static WalletException alreadyExists(String currency) {
