@@ -97,4 +97,23 @@ class KycClientTest {
         assertThatThrownBy(() -> client.mayFundWallet(UUID.randomUUID(), BigDecimal.ONE, "NGN"))
                 .isInstanceOfSatisfying(TransactionException.class, e -> assertThat(e.getErrorCode()).isEqualTo("KYC_UNAVAILABLE"));
     }
+
+    @Test
+    void asksTheTransferQuestion_withTheTransferOperation() {
+        body = "{\"allowed\":true,\"level\":1,\"maxSingleTransactionAmount\":50000.00,\"currency\":\"NGN\"}";
+        UUID customer = UUID.randomUUID();
+
+        var decision = client().mayTransfer(customer, new BigDecimal("10000.00"), "NGN");
+
+        assertThat(decision.allowed()).isTrue();
+        assertThat(seenPath.get()).isEqualTo("POST /internal/kyc/customers/" + customer + "/authorize");
+        assertThat(seenBody.get()).contains("\"operation\":\"P2P_TRANSFER\"").contains("\"currency\":\"NGN\"");
+    }
+
+    @Test
+    void ifKycCannotAnswerATransferQuestion_theCustomerIsNotWavedThrough() {
+        status = 503;
+        assertThatThrownBy(() -> client().mayTransfer(UUID.randomUUID(), BigDecimal.ONE, "NGN"))
+                .isInstanceOfSatisfying(TransactionException.class, e -> assertThat(e.getErrorCode()).isEqualTo("KYC_UNAVAILABLE"));
+    }
 }

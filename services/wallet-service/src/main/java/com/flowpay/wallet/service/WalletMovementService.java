@@ -69,7 +69,8 @@ public class WalletMovementService {
         }
     }
 
-    private WalletMovement move(MovementType type, UUID walletId, MovementRequest request) {
+    /** One balance change inside the caller's transaction. Also used by {@link WalletTransferService}. */
+    WalletMovement move(MovementType type, UUID walletId, MovementRequest request) {
         var now = clock.instant();
         int changed = type == MovementType.DEBIT
                 ? wallets.debit(walletId, request.amount(), request.currency(), now)

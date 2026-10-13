@@ -18,6 +18,21 @@ public interface WalletRepository extends JpaRepository<Wallet, UUID> {
 
     Optional<Wallet> findByIdAndCustomerId(UUID id, UUID customerId);
 
+    /** The customer's live (not closed) wallet in a currency. There is at most one. */
+    Optional<Wallet> findFirstByCustomerIdAndCurrencyAndStatusNot(UUID customerId, String currency, WalletStatus excluded);
+
+    /**
+     * Creates the platform fee wallet if it does not exist yet. Safe to call from any number of requests at once:
+     * the unique index lets exactly one insert win and the others do nothing.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            insert into wallets (id, customer_id, currency, ledger_balance, available_balance, status, created_at, updated_at)
+            values (:id, :customerId, :currency, 0, 0, 'ACTIVE', :now, :now)
+            on conflict (customer_id, currency) where status <> 'CLOSED' do nothing""", nativeQuery = true)
+    int createIfAbsent(@Param("id") UUID id, @Param("customerId") UUID customerId, @Param("currency") String currency,
+                       @Param("now") Instant now);
+
     @Query("select count(w) > 0 from Wallet w where w.customerId = :customerId and w.currency = :currency and w.status <> 'CLOSED'")
     boolean existsLive(@Param("customerId") UUID customerId, @Param("currency") String currency);
 

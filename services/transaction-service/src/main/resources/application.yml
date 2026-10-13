@@ -35,8 +35,12 @@ flowpay:
       url: ${WALLET_SERVICE_URL:http://localhost:8083}
     kyc:
       url: ${KYC_SERVICE_URL:http://localhost:8087}
+    transfer:
+      # Flat fee charged to the sender on top of the amount. Epic 11 (Fees) will replace this with real fee rules.
+      fee: ${TRANSFER_FEE:100.00}
     recovery:
-      # Fundings confirmed but not yet credited are retried every interval once they have waited at least min-age.
+      # Fundings and transfers left unfinished (the wallet service was unreachable) are retried every interval once they
+      # have waited at least min-age.
       interval: 30s
       min-age: 20s
 

@@ -39,6 +39,10 @@
     {
       "name": "7. Wallet funding",
       "description": "Add money to your wallet. You ask to fund it, pay through the chosen source, and your wallet is credited once the payment is confirmed. All calls need a bearer token and only ever touch your own fundings."
+    },
+    {
+      "name": "8. P2P transfers",
+      "description": "Send money to another FlowPay customer. See the fee first with a quote, then send with an Idempotency-Key so a retry never charges you twice. All calls need a bearer token and only ever touch your own transfers."
     }
   ],
   "paths": {
@@ -949,6 +953,309 @@
         ]
       }
     },
+    "/api/v1/transfers": {
+      "get": {
+        "tags": [
+          "8. P2P transfers"
+        ],
+        "summary": "List my transfers",
+        "description": "Transfers you sent and transfers you received, newest first. **Requires a bearer token.** `limit` defaults to 20 (1 to 100).\nEach has `direction`: `SENT` or `RECEIVED`. You only see a transfer you received once it has completed, and never its fee.\n\n### How to test\n1. Send a transfer: it appears for you as `SENT`. The recipient sees the same transfer as `RECEIVED`, without the fee.\n2. A new account gets an empty list. Without a token: **401**.\n",
+        "operationId": "listMyTransfers",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Your transfers (possibly none).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransferResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "8. P2P transfers"
+        ],
+        "summary": "Send money to another customer",
+        "description": "Sends money from your wallet to another customer's wallet. **Requires a bearer token and an `Idempotency-Key` header.**\n\n### How it works\n* You send `amount`; the recipient receives exactly that. You pay `amount + fee` (see the quote). The money leaves and arrives in **one all-or-nothing step**: it can never leave you without arriving.\n* Before moving anything it checks: you are not the recipient, your verification level allows this amount (live), you and the recipient both have an `ACTIVE` (recipient may also be `FROZEN`) wallet in this currency, and you can afford `amount + fee`.\n* **Idempotency-Key** (1 to 100 letters, digits, `. _ : -`) makes a retry safe. Send the same key with the same details again, for example after a timeout, and you get the **original result**; nothing is charged twice. Reuse the key for a different amount or recipient and you get **409**.\n* `201`: done (`SUCCESS`). `200`: this was a repeat of a transfer that already finished. `202`: recorded but not yet confirmed (`PROCESSING`); it will complete by itself, check it with `GET /api/v1/transfers/{reference}`.\n* If it fails, **nothing** was taken from your wallet.\n\n### How to test\n1. Have two verified customers, each with an `NGN` wallet; fund yours with `50000.00`.\n2. `POST` `{\"recipientCustomerId\":\"<theirs>\",\"amount\":10000.00,\"currency\":\"NGN\",\"narration\":\"Rent\"}` with `Idempotency-Key: ABC123`: **201** `SUCCESS`, `fee 100.00`, `total 10100.00`. Your wallet now shows `39900.00`; theirs `10000.00`.\n3. Send the **same** request again with `ABC123`: **200**, the same `reference`, balances unchanged.\n4. Send `ABC123` with amount `50000.00`: **409** `IDEMPOTENCY_KEY_REUSED`.\n5. A new key for `50000.00` (more than you can afford with the fee): **422** `INSUFFICIENT_FUNDS`, balance unchanged.\n6. Send to yourself: **422** `SELF_TRANSFER`. Unknown recipient: **404** `RECIPIENT_NOT_FOUND`. Amount `0`, negative or more than 2 decimals: **400**. No `Idempotency-Key`: **400**. No token: **401**.\n7. Not verified, or above your level's limit: **403** `KYC_LEVEL_TOO_LOW` / `KYC_LIMIT_EXCEEDED`.\n",
+        "operationId": "sendTransfer",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Your own unique key for this transfer, 1 to 100 letters, digits, . _ : -. Send the same key to retry safely.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "ABC123"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitiateTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The transfer succeeded.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A repeat of a transfer that already finished; nothing moved again.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Recorded, not yet confirmed (PROCESSING). It will complete by itself.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR (including a missing or malformed Idempotency-Key).",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "KYC_LEVEL_TOO_LOW or KYC_LIMIT_EXCEEDED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALLET_NOT_FOUND (yours) or RECIPIENT_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "IDEMPOTENCY_KEY_REUSED: the key was used for a different transfer.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "SELF_TRANSFER, WALLET_NOT_ACTIVE, INSUFFICIENT_FUNDS, RECIPIENT_NOT_ACCEPTING_FUNDS or UNSUPPORTED_CURRENCY. Nothing was taken.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "WALLET_UNAVAILABLE or KYC_UNAVAILABLE: a check could not be made; nothing was recorded. Safe to retry.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/transfers/quote": {
+      "post": {
+        "tags": [
+          "8. P2P transfers"
+        ],
+        "summary": "See what a transfer will cost",
+        "description": "Shows the amount, the fee and the total that would leave your wallet. **Requires a bearer token.** Nothing is moved or recorded.\n\n### How to test\n1. `POST` `{\"amount\":10000.00,\"currency\":\"NGN\"}`: **200** `amount 10000.00`, `fee 100.00`, `total 10100.00`.\n2. Amount `0`, negative or with more than 2 decimals: **400**. Without a token: **401**.\n",
+        "operationId": "quoteTransfer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The quote.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/transfers/{reference}": {
+      "get": {
+        "tags": [
+          "8. P2P transfers"
+        ],
+        "summary": "See how a transfer is going",
+        "description": "Shows one transfer you sent or received. **Requires a bearer token.**\n\n### How it works\n* `SUCCESS`: the money moved. `FAILED`: nothing was taken from your wallet (see `failureReason`). `PROCESSING`: recorded, waiting to be confirmed; it completes by itself.\n* Someone else's transfer returns **404**, the same as one that does not exist. A transfer you received that has not completed is also **404**.\n\n### How to test\n1. Send a transfer and view it by its `reference`: **200**, `SUCCESS`.\n2. An unknown reference or someone else's: **404** `TRANSFER_NOT_FOUND`. Without a token: **401**.\n",
+        "operationId": "viewTransfer",
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The transfer.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TRANSFER_NOT_FOUND.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/users": {
       "post": {
         "tags": [
@@ -1715,6 +2022,46 @@
           "walletId"
         ]
       },
+      "InitiateTransferRequest": {
+        "type": "object",
+        "description": "Send money to another FlowPay customer. You are the sender; it is taken from your token, never from here.",
+        "properties": {
+          "recipientCustomerId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The customer who receives the money.",
+            "example": "5a3d8b0e-6f0c-4f0a-9a43-0d6a8a3c1b11"
+          },
+          "amount": {
+            "type": "number",
+            "description": "What the recipient receives. More than zero, at most 2 decimal places. The fee is added on top, so you pay amount + fee. Money is never a floating-point number.",
+            "example": 10000.0,
+            "minimum": 0.01
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency. Must be the currency of both wallets; never assumed.",
+            "example": "NGN",
+            "minLength": 1,
+            "pattern": "^[A-Z]{3}$"
+          },
+          "narration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An optional note the recipient sees, up to 140 characters.",
+            "example": "Rent for October",
+            "maxLength": 140,
+            "minLength": 0
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "recipientCustomerId"
+        ]
+      },
       "KycStatusResponse": {
         "type": "object",
         "description": "Your verification status, per tier, and what your current level allows.",
@@ -1839,6 +2186,54 @@
         },
         "required": [
           "email"
+        ]
+      },
+      "QuoteResponse": {
+        "type": "object",
+        "description": "What a transfer would cost. Nothing has been moved or recorded.",
+        "properties": {
+          "amount": {
+            "type": "number",
+            "description": "What the recipient receives.",
+            "example": 10000.0
+          },
+          "fee": {
+            "type": "number",
+            "description": "The fee on top.",
+            "example": 100.0
+          },
+          "total": {
+            "type": "number",
+            "description": "What leaves your wallet: amount + fee.",
+            "example": 10100.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          }
+        }
+      },
+      "QuoteTransferRequest": {
+        "type": "object",
+        "description": "Ask what a transfer would cost, before you confirm it.",
+        "properties": {
+          "amount": {
+            "type": "number",
+            "description": "What the recipient would receive.",
+            "example": 10000.0,
+            "minimum": 0.01
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency.",
+            "example": "NGN",
+            "minLength": 1,
+            "pattern": "^[A-Z]{3}$"
+          }
+        },
+        "required": [
+          "amount",
+          "currency"
         ]
       },
       "RefreshTokenRequest": {
@@ -2112,6 +2507,88 @@
             "type": "string",
             "description": "Opaque token valid 7 days. Exchange it at /refresh; each one works once.",
             "example": "SsCed_IPmKTsFYekt7bVScwtaMIB1whQezv9bXeKxrI"
+          }
+        }
+      },
+      "TransferResponse": {
+        "type": "object",
+        "description": "A transfer of money between two customers, and how it is going.",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "description": "Unique reference. Quote it when contacting support.",
+            "example": "TRF-9F3A91C2B7D04E1A8C55"
+          },
+          "direction": {
+            "type": "string",
+            "description": "SENT if you sent it, RECEIVED if it was sent to you.",
+            "enum": [
+              "SENT",
+              "RECEIVED"
+            ],
+            "example": "SENT"
+          },
+          "counterpartyCustomerId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The other customer: the recipient if you sent it, the sender if you received it."
+          },
+          "amount": {
+            "type": "number",
+            "description": "What the recipient receives.",
+            "example": 10000.0
+          },
+          "fee": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "The fee the sender paid. Only the sender sees it.",
+            "example": 100.0
+          },
+          "total": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "What left the sender's wallet: amount + fee. Only the sender sees it.",
+            "example": 10100.0
+          },
+          "currency": {
+            "type": "string",
+            "example": "NGN"
+          },
+          "narration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "Rent for October"
+          },
+          "status": {
+            "type": "string",
+            "description": "PROCESSING (recorded, money moving or waiting to be confirmed), SUCCESS (the money moved), FAILED (nothing was taken from your wallet).",
+            "enum": [
+              "PROCESSING",
+              "SUCCESS",
+              "FAILED"
+            ],
+            "example": "SUCCESS"
+          },
+          "failureReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed, when status is FAILED. Only the sender sees it."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
