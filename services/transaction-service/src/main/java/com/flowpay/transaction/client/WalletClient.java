@@ -36,6 +36,13 @@ public class WalletClient {
         static CreditOutcome unavailable() { return new CreditOutcome(Kind.UNAVAILABLE, null); }
     }
 
+    /** What the wallet service answered to a transfer request. Same three kinds of answer as a credit. */
+    public record TransferOutcome(Kind kind, String code, String message) {
+        static TransferOutcome transferred() { return new TransferOutcome(Kind.CREDITED, null, null); }
+        static TransferOutcome refused(String code, String message) { return new TransferOutcome(Kind.REFUSED, code, message); }
+        static TransferOutcome unavailable() { return new TransferOutcome(Kind.UNAVAILABLE, null, null); }
+    }
+
     public record WalletView(UUID id, UUID customerId, String currency, String status) {
     }
 
@@ -48,7 +55,11 @@ public class WalletClient {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record ErrorBody(String error) {
+    record ErrorBody(String error, String message) {
+    }
+
+    record TransferRequest(String reference, UUID senderWalletId, UUID recipientWalletId, BigDecimal amount,
+                           BigDecimal fee, String currency) {
     }
 
     record CreditRequest(String reference, BigDecimal amount, String currency) {
@@ -80,6 +91,69 @@ public class WalletClient {
             });
         } catch (RestClientException e) {
             throw unavailable("wallet service unreachable", e);
+        }
+    }
+
+    /** A customer's live wallet in a currency, or empty if they have none. Throws 503 if the wallet service cannot answer. */
+    public Optional<WalletView> findByCustomer(UUID customerId, String currency) {
+        try {
+            return restClient.get().uri("/internal/wallets/by-customer/{id}?currency={currency}", customerId, currency)
+                    .exchange((request, response) -> {
+                        int code = response.getStatusCode().value();
+                        if (code == 404) {
+                            return Optional.<WalletView>empty();
+                        }
+                        if (code != 200) {
+                            throw unavailable("wallet lookup answered " + code, null);
+                        }
+                        Wallet w = response.bodyTo(Wallet.class);
+                        if (w == null || w.id() == null) {
+                            throw unavailable("wallet lookup returned no wallet", null);
+                        }
+                        return Optional.of(new WalletView(w.id(), w.customerId(), w.currency(), w.status()));
+                    });
+        } catch (RestClientException e) {
+            throw unavailable("wallet service unreachable", e);
+        }
+    }
+
+    /**
+     * Asks the wallet service to move the money: amount + fee out of the sender, amount to the recipient, fee to the
+     * platform, all or nothing. Never throws: every outcome is one of the three kinds. The transfer reference is the
+     * wallet's reference, so asking twice moves the money once.
+     */
+    public TransferOutcome transfer(String reference, UUID senderWalletId, UUID recipientWalletId, BigDecimal amount,
+                                    BigDecimal fee, String currency) {
+        try {
+            return restClient.post().uri("/internal/wallets/transfer")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(new TransferRequest(reference, senderWalletId, recipientWalletId, amount, fee, currency))
+                    .exchange((request, response) -> {
+                        int code = response.getStatusCode().value();
+                        if (code == 200 || code == 201) {
+                            return TransferOutcome.transferred();
+                        }
+                        // 401/403: our key is wrong. 408/429/5xx: the wallet service (or its fee wallet) is struggling.
+                        // None of these say the money was refused, so keep the transfer and try again.
+                        if (code == 401 || code == 403 || code == 408 || code == 429 || code >= 500) {
+                            log.warn("Wallet transfer answered {} for reference {}", code, reference);
+                            return TransferOutcome.unavailable();
+                        }
+                        ErrorBody body = readBody(response);
+                        return TransferOutcome.refused(body != null && body.error() != null ? body.error() : "HTTP_" + code,
+                                body == null ? null : body.message());
+                    });
+        } catch (RestClientException e) {
+            log.warn("Wallet transfer failed for reference {}: {}", reference, e.getMessage());
+            return TransferOutcome.unavailable();
+        }
+    }
+
+    private static ErrorBody readBody(RestClient.RequestHeadersSpec.ConvertibleClientHttpResponse response) {
+        try {
+            return response.bodyTo(ErrorBody.class);
+        } catch (RestClientException e) {
+            return null; // an unreadable body does not change what the status code says
         }
     }
 

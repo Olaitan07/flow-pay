@@ -25,6 +25,10 @@ public class TransactionException extends RuntimeException {
         return new TransactionException(HttpStatus.NOT_FOUND, "FUNDING_NOT_FOUND", "Funding not found");
     }
 
+    public static TransactionException transferNotFound() {
+        return new TransactionException(HttpStatus.NOT_FOUND, "TRANSFER_NOT_FOUND", "Transfer not found");
+    }
+
     public static TransactionException conflict(String code, String message) {
         return new TransactionException(HttpStatus.CONFLICT, code, message);
     }

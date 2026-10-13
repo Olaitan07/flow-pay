@@ -149,4 +149,107 @@ class WalletClientTest {
         assertThatThrownBy(() -> client.find(walletId))
                 .isInstanceOfSatisfying(TransactionException.class, e -> assertThat(e.getErrorCode()).isEqualTo("WALLET_UNAVAILABLE"));
     }
+
+    // ------------------------------------------------------------------ finding a customer's wallet
+
+    @Test
+    void findsACustomersWalletByCurrency_readingTheRealResponseShape() {
+        body = """
+                {"id":"%s","customerId":"%s","currency":"NGN","ledgerBalance":0.00,"availableBalance":0.00,
+                 "status":"ACTIVE","createdAt":"2026-10-12T10:00:00Z"}""".formatted(walletId, customerId);
+
+        var wallet = client().findByCustomer(customerId, "NGN").orElseThrow();
+
+        assertThat(wallet.id()).isEqualTo(walletId);
+        assertThat(wallet.customerId()).isEqualTo(customerId);
+        assertThat(wallet.status()).isEqualTo("ACTIVE");
+        assertThat(seenPath.get()).isEqualTo("GET /internal/wallets/by-customer/" + customerId);
+        assertThat(seenKey.get()).isEqualTo("the-key");
+    }
+
+    @Test
+    void aCustomerWithNoWalletIsEmpty_notAnError() {
+        status = 404;
+        body = "{\"error\":\"WALLET_NOT_FOUND\"}";
+
+        assertThat(client().findByCustomer(customerId, "NGN")).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {401, 500, 503})
+    void aCustomerLookupThatCannotAnswerIsUnavailable_notMissing(int code) {
+        status = code;
+
+        assertThatThrownBy(() -> client().findByCustomer(customerId, "NGN"))
+                .isInstanceOfSatisfying(TransactionException.class, e -> assertThat(e.getErrorCode()).isEqualTo("WALLET_UNAVAILABLE"));
+    }
+
+    // ------------------------------------------------------------------ transfers
+
+    private final UUID recipientWalletId = UUID.randomUUID();
+
+    @Test
+    void transferSendsTheReferenceBothWalletsAndExactMoney() {
+        status = 201;
+
+        var outcome = client().transfer("TRF-ABC", walletId, recipientWalletId, new BigDecimal("10000.00"), new BigDecimal("100.00"), "NGN");
+
+        assertThat(outcome.kind()).isEqualTo(WalletClient.Kind.CREDITED);
+        assertThat(seenPath.get()).isEqualTo("POST /internal/wallets/transfer");
+        assertThat(seenKey.get()).isEqualTo("the-key");
+        assertThat(seenBody.get()).contains("\"reference\":\"TRF-ABC\"").contains("\"currency\":\"NGN\"")
+                .contains("\"senderWalletId\":\"" + walletId + "\"")
+                .contains("\"recipientWalletId\":\"" + recipientWalletId + "\"")
+                .containsPattern("\"amount\":10000(\\.00)?[,}]").containsPattern("\"fee\":100(\\.00)?[,}]");
+    }
+
+    @Test
+    void aRepeatedTransferThatTheWalletRecognisesCountsAsDone() {
+        status = 200;
+
+        assertThat(client().transfer("TRF-ABC", walletId, recipientWalletId, BigDecimal.ONE, BigDecimal.ZERO, "NGN").kind())
+                .isEqualTo(WalletClient.Kind.CREDITED);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {404, 409, 422, 400})
+    void aClearTransferRefusalCarriesTheWalletsReasonAndMessage(int code) {
+        status = code;
+        body = "{\"status\":" + code + ",\"error\":\"INSUFFICIENT_FUNDS\",\"message\":\"Not enough available balance\"}";
+
+        var outcome = client().transfer("TRF-ABC", walletId, recipientWalletId, BigDecimal.ONE, BigDecimal.ZERO, "NGN");
+
+        assertThat(outcome.kind()).isEqualTo(WalletClient.Kind.REFUSED);
+        assertThat(outcome.code()).isEqualTo("INSUFFICIENT_FUNDS");
+        assertThat(outcome.message()).isEqualTo("Not enough available balance");
+    }
+
+    @Test
+    void aTransferRefusalWithNoReadableReasonStillCountsAsRefused() {
+        status = 422;
+        body = "not json";
+
+        var outcome = client().transfer("TRF-ABC", walletId, recipientWalletId, BigDecimal.ONE, BigDecimal.ZERO, "NGN");
+
+        assertThat(outcome.kind()).isEqualTo(WalletClient.Kind.REFUSED);
+        assertThat(outcome.code()).isEqualTo("HTTP_422");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {401, 403, 408, 429, 500, 502, 503})
+    void aTransferAnswerThatSaysNothingAboutTheMoneyIsUnavailable_soItIsRetried(int code) {
+        status = code;
+
+        assertThat(client().transfer("TRF-ABC", walletId, recipientWalletId, BigDecimal.ONE, BigDecimal.ZERO, "NGN").kind())
+                .isEqualTo(WalletClient.Kind.UNAVAILABLE);
+    }
+
+    @Test
+    void anUnreachableWalletServiceMeansAnUnconfirmedTransfer_neverAFailedOne() {
+        var client = client();
+        server.stop(0);
+
+        assertThat(client.transfer("TRF-ABC", walletId, recipientWalletId, BigDecimal.ONE, BigDecimal.ZERO, "NGN").kind())
+                .isEqualTo(WalletClient.Kind.UNAVAILABLE);
+    }
 }

@@ -30,10 +30,19 @@ public class KycClient {
 
     /** May this customer add this much money to a wallet? Throws 503 if the answer cannot be obtained. */
     public Decision mayFundWallet(UUID customerId, BigDecimal amount, String currency) {
+        return authorize(customerId, "FUND_WALLET", amount, currency);
+    }
+
+    /** May this customer send this much to another customer? Throws 503 if the answer cannot be obtained. */
+    public Decision mayTransfer(UUID customerId, BigDecimal amount, String currency) {
+        return authorize(customerId, "P2P_TRANSFER", amount, currency);
+    }
+
+    private Decision authorize(UUID customerId, String operation, BigDecimal amount, String currency) {
         try {
             Decision decision = restClient.post().uri("/internal/kyc/customers/{id}/authorize", customerId)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(new AuthorizeRequest("FUND_WALLET", amount, currency))
+                    .body(new AuthorizeRequest(operation, amount, currency))
                     .retrieve()
                     .body(Decision.class);
             if (decision == null) {
